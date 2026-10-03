@@ -1,0 +1,22 @@
+# Live browser session. Never commit: contains real auth cookies.
+.pw-profile/
+sessions/
+*_session.json
+
+# Secrets
+.env
+
+# Client data and scrape output
+data/
+fixtures/
+*.db
+*.db-wal
+*.db-shm
+logs/
+screenshots/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
