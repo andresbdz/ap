@@ -1,0 +1,182 @@
+# Runbook
+
+What to do when something happens. Written for whoever is on duty, not for
+whoever wrote the code.
+
+## The one rule
+
+**When the tool stops, it stopped for a reason. Find the reason before
+restarting it.**
+
+A halt means the portal told us something we should listen to. Clearing one
+without reading it is how an account gets blocked, and this account is how the
+business buys parts.
+
+---
+
+## Daily
+
+```bash
+.venv/bin/python -m txtav.cli summary
+```
+
+Read three lines:
+
+| Line | Healthy | Act if |
+|---|---|---|
+| `progress` | climbing by roughly 7,800 a day | flat since yesterday |
+| `schedule` | `on track` | `BEHIND by N parts` |
+| `STOPPED` | absent | present, see below |
+
+If the session has lapsed, sign in again:
+
+```bash
+.venv/bin/python -m txtav.cli login
+```
+
+A browser opens. Sign in by hand, including the 2FA code from the shared
+mailbox, then press Enter in the terminal. It prints `Signed in` or
+`NOT signed in`. Nothing else is automated here, deliberately.
+
+---
+
+## When it has stopped
+
+`summary` and `run` both print the halt. There are four kinds and they are not
+equally serious.
+
+### `session_expired`
+
+The login lapsed. Ordinary, not a warning from the portal.
+
+```bash
+.venv/bin/python -m txtav.cli login            # sign in by hand
+.venv/bin/python -m txtav.cli halt-clear --id N --by "your name"
+.venv/bin/python -m txtav.cli run
+```
+
+### `rate_limited`, `forbidden`, `unauthorized`
+
+HTTP 429, 403 or 401. **The portal is refusing us.** Do not clear and retry.
+
+1. Open the portal in an ordinary browser and sign in as a person. Does it work?
+2. Look at `screenshots/` for the image captured at the moment it stopped.
+   Identifying details are masked; the error is not.
+3. Tell the account owner before doing anything else.
+4. Only clear it once someone has decided it is safe, and consider raising
+   `TXTAV_REQUEST_INTERVAL_SECONDS` before the next run.
+
+### `captcha`, `access_warning`, `account_locked`
+
+**Stop. Do not clear this.** The portal has said, in words, that it is unhappy
+with the traffic. Escalate to the account owner. Restarting risks the account.
+
+### `pricing_revoked`
+
+The page offered "Request Access to View Pricing" where a price belongs. The
+account has lost pricing access, which it has done before. No amount of
+retrying fixes it. Contact the account owner; this is a portal permissions
+question, not a software one.
+
+### `consecutive_failures`
+
+Three parts in a row failed with nothing else to explain it, which usually
+means quiet blocking rather than three unrelated faults. Treat it as the
+`rate_limited` case.
+
+### `unrecognised_page`
+
+A page loaded, the guard was happy with it, and it was not a part page. Usually
+the portal's markup changed. Look at the saved HTML, fix the selectors in
+`txtav/extract.py`, run the tests, then clear.
+
+---
+
+## Falling behind
+
+```
+schedule      BEHIND by 4,210 parts, cycle ends 2026-10-16 12:19:11
+```
+
+The cycle has a fixed deadline and no spare capacity: 109,589 parts over 14
+days is one every 11.0 seconds, continuously. An hour lost is about 327 parts
+that cannot be made up inside the window.
+
+Options, in order of preference:
+
+1. **Accept a longer cycle.** Say so and let it run. The data is still correct.
+2. **Find the lost time.** Did the machine sleep? Did the session lapse
+   overnight? Fix the cause rather than the symptom.
+3. **Shorten the interval.** Last resort, and never without the account
+   owner's agreement, because it means more load on the portal.
+
+Never edit the database to mark parts done.
+
+---
+
+## Routine commands
+
+```bash
+.venv/bin/python -m txtav.cli import              # reload the part list
+.venv/bin/python -m txtav.cli status              # counts, pacing, open halts
+.venv/bin/python -m txtav.cli login               # sign in by hand
+.venv/bin/python -m txtav.cli dryrun --limit 5    # fetch without writing
+.venv/bin/python -m txtav.cli run                 # process pending parts
+.venv/bin/python -m txtav.cli run --limit 50      # a bounded run
+.venv/bin/python -m txtav.cli results --limit 20  # see captured rows
+.venv/bin/python -m txtav.cli export --out data/Output.xlsx
+.venv/bin/python -m txtav.cli summary --send      # also post to the webhook
+.venv/bin/python -m txtav.cli halt-clear --id N --by NAME
+```
+
+Verification, when something looks wrong:
+
+```bash
+.venv/bin/python -m pytest -q                     # 246 tests, no network
+.venv/bin/python scripts/verify_sample.py         # field by field, live
+.venv/bin/python scripts/check_redaction.py       # prove screenshots are safe
+```
+
+---
+
+## Keeping it running
+
+The machine must stay awake for the whole cycle.
+
+```bash
+caffeinate -dimsu .venv/bin/python -m txtav.cli run
+```
+
+Whatever machine is used, **the login must happen on that same machine**: the
+session belongs to the browser profile in `.pw-profile/`, and moving it changes
+both the IP and the browser environment mid-session.
+
+---
+
+## Things never to do
+
+- Never clear a halt you have not read.
+- Never lower `TXTAV_REQUEST_INTERVAL_SECONDS` to catch up. It is refused below
+  2.0 seconds and should not be touched without the account owner's agreement.
+- Never run two copies at once. One browser, one tab, strictly sequential.
+- Never commit `.pw-profile/`, `data/`, `fixtures/`, `logs/` or `.env`. They
+  hold live session cookies, the client's part list, and pages carrying the
+  account holder's name.
+- Never edit the Output sheet by hand while a run is in progress. The sheet is
+  overwritten row by row from the database.
+- Never automate the login or the 2FA code. The manual step is the point.
+
+---
+
+## Where things are
+
+| | |
+|---|---|
+| Job store, the source of truth | `data/txtav.db` |
+| Browser session | `.pw-profile/` |
+| Logs, JSON, rotated at 20 MB, 10 kept | `logs/txtav.log` |
+| Screenshots of stoppages, masked | `screenshots/` |
+| Settings | `.env`, documented in `.env.example` |
+
+The spreadsheet is a projection of the database, never the other way round. If
+the two disagree, the database is right: re-export.

@@ -314,6 +314,7 @@ def run(
             _save_page(save_pages, pn, html)
 
         if decision is not None and decision.should_stop:
+            save_failure_screenshot(navigator, settings, pn, decision.kind)
             _finish(conn, cycle_id, pn, db.STATUS_PENDING, decision.detail)
             db.raise_halt(conn, decision.kind, decision.detail)
             report.halted = decision
@@ -460,7 +461,26 @@ def _attempt(
     return None, None, last_error or "exhausted retries", None
 
 
-def save_failure_screenshot(navigator: Navigator, settings: Settings, pn: str) -> Path:
-    path = Path(settings.screenshot_dir) / f"{int(time.time())}_{pn.replace('/', '_')}.png"
-    navigator.screenshot(path)
+def save_failure_screenshot(
+    navigator: Navigator, settings: Settings, pn: str, reason: str
+) -> Path | None:
+    """Photograph the page that caused a stop, with identities masked.
+
+    Best effort: a browser that has already died cannot be photographed, and
+    failing to capture evidence must not change the outcome of the stop.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", pn)
+    path = Path(settings.screenshot_dir) / f"{int(time.time())}_{reason}_{safe}.png"
+    try:
+        masked = navigator.screenshot(path)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("screenshot_failed", pn=pn, error=f"{type(exc).__name__}: {exc}")
+        return None
+
+    if masked == 0:
+        # Nothing matched the redaction selectors. Either the portal's markup
+        # changed or this is not a portal page, and in both cases the image may
+        # carry details it should not.
+        log.warning("screenshot_unmasked", pn=pn, path=str(path))
+    log.info("screenshot_saved", pn=pn, path=str(path), masked=masked)
     return path

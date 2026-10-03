@@ -38,6 +38,8 @@ These are design constraints, not preferences.
 - Credentials, cookies and one time codes are redacted from every log record by
   a processor, not by call sites.
 
+Operational procedures are in [RUNBOOK.md](RUNBOOK.md).
+
 ## Setup
 
 ```bash
@@ -180,6 +182,8 @@ flags the row for review. It does not change the written value.
 | 2 | Extractor against saved page fixtures | done |
 | 3 | Session, halt guard, navigator, run loop | done |
 | 4 | Verified sample, client confirms accuracy | awaiting client |
-| 5 | Sheet writer, alerts, daily summary, runbook | |
+| 5 | Exporter, alerts, daily summary, runbook | done |
+| 5b | Google Sheets writer | needs the sheet converted |
+| 5c | Supervisor loop for continuous running | needs the host decided |
 | 6 | Pilot of 500 parts over one day | client gate |
 | 7 | Full cycle | only after phase 6 is approved |

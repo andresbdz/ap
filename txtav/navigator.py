@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from txtav import guard, urls
+from txtav import guard, redact_page, urls
 
 
 @dataclass
@@ -93,15 +93,28 @@ class Navigator:
         decision = guard.assess(None, self.page.url, text)
         return decision.verdict is not guard.Verdict.REAUTH
 
-    def screenshot(self, path: Path) -> None:
-        """Capture the viewport for debugging a failure.
+    def screenshot(self, path: Path) -> int:
+        """Capture the viewport for debugging a failure, with identities hidden.
 
-        Viewport only, never full page: the account name and the regional
-        support contact block sit outside it, and a screenshot is the easiest
-        way to leak personal data into a ticket.
+        The account holder's name, the customer number and the support contact
+        details are masked in the page before the shutter, so they never reach
+        the image file. Returns how many elements were masked, which is logged:
+        a sudden zero means the portal's markup changed and the next screenshot
+        would otherwise carry the client's details into a ticket.
+
+        Viewport only, never full page, for the same reason.
         """
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.page.screenshot(path=str(path), full_page=False)
+        masked = 0
+        try:
+            masked = redact_page.mask(self.page)
+            self.page.screenshot(path=str(path), full_page=False)
+        finally:
+            try:
+                redact_page.unmask(self.page)
+            except Exception:  # noqa: BLE001 - the page may already be gone
+                pass
+        return masked
 
 
 @contextmanager

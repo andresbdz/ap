@@ -12,6 +12,7 @@ costs nothing; a leaked session cookie costs the account.
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import re
 from pathlib import Path
 from typing import Any
@@ -106,13 +107,27 @@ def redact_processor(
     }
 
 
+# A 14 day run at one part every 11 seconds writes roughly 110,000 records.
+# Rotation is sized so a stoppage can still be traced back through several
+# days of history without the directory growing without limit.
+LOG_MAX_BYTES = 20 * 1024 * 1024
+LOG_BACKUPS = 10
+
+
 def configure(log_dir: Path | str | None = None, level: str = "INFO") -> None:
     """Install JSON logging to stderr, and to a rotating file when given a dir."""
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     if log_dir is not None:
         directory = Path(log_dir)
         directory.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(directory / "txtav.log", encoding="utf-8"))
+        handlers.append(
+            logging.handlers.RotatingFileHandler(
+                directory / "txtav.log",
+                maxBytes=LOG_MAX_BYTES,
+                backupCount=LOG_BACKUPS,
+                encoding="utf-8",
+            )
+        )
 
     logging.basicConfig(
         format="%(message)s",
