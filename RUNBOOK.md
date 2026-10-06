@@ -80,15 +80,29 @@ question, not a software one.
 
 ### `consecutive_failures`
 
-Three parts in a row failed with nothing else to explain it, which usually
-means quiet blocking rather than three unrelated faults. Treat it as the
-`rate_limited` case.
+Eight parts in a row failed with nothing else to explain it, which usually
+means quiet blocking rather than eight unrelated faults. Each of those eight was
+already three exhausted attempts, so this is roughly twenty four failed requests.
+Treat it as the `rate_limited` case.
 
 ### `unrecognised_page`
 
-A page loaded, the guard was happy with it, and it was not a part page. Usually
-the portal's markup changed. Look at the saved HTML, fix the selectors in
-`txtav/extract.py`, run the tests, then clear.
+A page loaded, the guard was happy with it, and it was either not a part page or
+carried a field we could not read, such as a price heading with words where an
+amount belongs. Usually the portal's markup or wording changed. Look at the saved
+HTML, fix the selectors in `txtav/extract.py`, run the tests, then clear.
+
+### `extractor_failed`
+
+The extractor raised something nobody anticipated. This is a bug in our code
+rather than a state of the portal. The detail names the exception. Fix it, add a
+test for the page that caused it, then clear.
+
+### `browser_gone`
+
+Chromium died: the machine slept, ran out of memory, or was killed. Nothing
+suggests the portal blocked us. Check the machine stayed up, then clear this and
+start again. Nothing is lost; the part that was in flight is picked up again.
 
 ---
 
@@ -155,6 +169,12 @@ It stops by itself, with an alert, for two reasons you have to act on:
 - **session expired** — run `txtav login`, sign in by hand, start it again
 - **halted** — read the halt first, see above
 
+Every 8 passes, roughly five hours, it closes the browser and opens a new one.
+That is deliberate: one Chromium tab is not built to navigate 109,589 pages
+without being replaced, and the session lives in `.pw-profile/` rather than in
+the browser, so reopening costs a couple of seconds and loses nothing. Expect
+`browser_recycled` in the log. `--session-passes` changes the interval.
+
 On a machine that sleeps, wrap it:
 
 ```bash
@@ -203,7 +223,22 @@ the two disagree, the database is right:
 
 That rewrites all 109,589 rows in about 50 seconds. The sheet also updates
 during a run, so a push is only needed after a failed live update or if someone
-has edited the sheet by hand.
+has edited the sheet by hand. A run that could not write some rows says so at
+the end and raises a `sheet_behind` alert naming them, so this is never
+something to be guessed at.
+
+If the header row itself has been damaged, add `--repair-header` to rebuild row
+1 as well.
+
+Do not reach for `--processed-only` here; it is refused. Writing only the parts
+done so far would shift every row and shrink the tab, which is how 1,148 rows
+came to carry another part's prices on 2026-10-06. A full push is safe at any
+point in a cycle: parts not yet reached simply keep the value they already had.
+For a sample to look at or send, write a file instead:
+
+```bash
+.venv/bin/python -m txtav.cli export --processed-only --out data/sample.xlsx
+```
 
 A row with a blank price is not necessarily a fault. `summary` counts the three
 reasons separately: discontinued, sold on quotation, and listed but not

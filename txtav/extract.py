@@ -45,7 +45,6 @@ QUOTE_ONLY = "price_on_request"
 # one. Seen on 000-110029-67.
 NOT_OFFERED = "no_price_listed"
 
-_STOCK = re.compile(r"\b([0-9][0-9,]*)\s*IN\s+STOCK\b", re.IGNORECASE)
 
 
 class ExtractionError(ValueError):
@@ -172,7 +171,7 @@ def extract(page_html: str, pn_requested: str) -> PartRecord:
         "//*[contains(translate(text(),'instock','INSTOCK'),'IN STOCK')]"
     )
     for node in stock_nodes:
-        match = _STOCK.search(_text(node))
+        match = rules.STOCK.search(_text(node))
         if match:
             record.quantity = int(match.group(1).replace(",", ""))
             break

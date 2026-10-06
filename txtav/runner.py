@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from txtav import alerts, db, extract, guard, live_sheet, logging_setup, redact_page
+from txtav import alerts, db, extract, guard, live_sheet, logging_setup, redact_page, rules
 from txtav.config import Settings
 from txtav.navigator import Navigator
 from txtav.pacer import Pacer
@@ -71,6 +71,7 @@ class CycleProgress:
     done: int
     elapsed_fraction: float
     ends_at: str
+    total_days: float = 14.0
 
     @property
     def expected_done(self) -> int:
@@ -83,8 +84,13 @@ class CycleProgress:
 
     @property
     def on_schedule(self) -> bool:
-        # One hour of slack, which at 11 seconds a part is about 327 parts.
-        return self.behind_by <= (self.total / (14 * 24))
+        # One hour of slack, measured from this cycle's own length rather than
+        # from a hard coded 14 days: a shorter cycle has to run faster, so an
+        # hour of it is fewer parts, and a fixed divisor would quietly call a
+        # late run healthy.
+        if self.total_days <= 0:
+            return True
+        return self.behind_by <= (self.total / (self.total_days * 24))
 
     def describe(self) -> str:
         return (
@@ -191,6 +197,7 @@ def cycle_progress(conn: sqlite3.Connection, cycle_id: int) -> CycleProgress | N
         done=int(counts["done"] or 0),
         elapsed_fraction=float(row["elapsed_days"]) / float(row["total_days"]),
         ends_at=row["ends_at"],
+        total_days=float(row["total_days"]),
     )
 
 
@@ -208,20 +215,22 @@ def reset_stale(conn: sqlite3.Connection, cycle_id: int) -> int:
 def pending(
     conn: sqlite3.Connection, cycle_id: int, limit: int | None
 ) -> list[tuple[str, int]]:
-    """Pending parts as (part number, source row), in the input tab's order.
+    """Pending parts as (part number, output row), in the output tab's order.
 
-    The source row travels with the part because it is the sheet row that part
-    occupies, which is what makes a live update one contiguous write.
+    The output row travels with the part because it is the sheet row that part
+    occupies, which is what makes a live update one contiguous write. It is not
+    the source row: the input tab also holds 200 MHI and BBD rows, so the two
+    differ by an offset that nothing should be relying on.
     """
     sql = (
-        "SELECT j.pn, p.source_row FROM jobs j JOIN parts p ON p.pn = j.pn "
-        "WHERE j.cycle_id = ? AND j.status = 'pending' ORDER BY p.source_row"
+        "SELECT j.pn, p.output_row FROM jobs j JOIN parts p ON p.pn = j.pn "
+        "WHERE j.cycle_id = ? AND j.status = 'pending' ORDER BY p.output_row"
     )
     params: list[object] = [cycle_id]
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
-    return [(row["pn"], int(row["source_row"])) for row in conn.execute(sql, params)]
+    return [(row["pn"], int(row["output_row"])) for row in conn.execute(sql, params)]
 
 
 def _store(conn: sqlite3.Connection, cycle_id: int, record: extract.PartRecord) -> None:
@@ -269,8 +278,17 @@ def run(
     limit: int | None = None,
     dry_run: bool = False,
     save_pages: Path | None = None,
+    pace: Pacer | None = None,
+    tripwire: guard.ConsecutiveFailureTripwire | None = None,
 ) -> RunReport:
-    """Process pending parts until the queue empties, the limit is hit, or we stop."""
+    """Process pending parts until the queue empties, the limit is hit, or we stop.
+
+    The pacer and the tripwire are accepted rather than always built here so a
+    supervisor can keep one of each across its passes. Built fresh per pass they
+    both forget what came before: the pacer let the first request of a pass go
+    out without waiting, and the failure count reset every 200 parts, so a slow
+    drip of failures either side of a boundary never tripped anything.
+    """
     report = RunReport()
 
     halt = db.open_halt(conn)
@@ -298,8 +316,10 @@ def run(
         db.log_event(conn, "warning", "behind_schedule", progress.describe())
 
     live = None if dry_run else live_sheet.build(settings)
-    pace = Pacer(settings.request_interval_seconds, settings.jitter_seconds)
-    tripwire = guard.ConsecutiveFailureTripwire(settings.consecutive_failure_halt)
+    if pace is None:
+        pace = Pacer(settings.request_interval_seconds, settings.jitter_seconds)
+    if tripwire is None:
+        tripwire = guard.ConsecutiveFailureTripwire(settings.consecutive_failure_halt)
 
     log.info(
         "run_started",
@@ -309,7 +329,7 @@ def run(
         dry_run=dry_run,
     )
 
-    for pn, source_row in queue:
+    for pn, output_row in queue:
         conn.execute(
             "UPDATE jobs SET status = 'in_flight', attempts = attempts + 1,"
             " started_at = datetime('now') WHERE cycle_id = ? AND pn = ?",
@@ -364,7 +384,7 @@ def run(
             )
 
         if live is not None:
-            live.record(source_row)
+            live.record(output_row)
             if live.due:
                 live.flush(conn)
 
@@ -373,6 +393,18 @@ def run(
         # in the database and the sheet should show what was actually done
         # before the stop.
         live.flush(conn)
+        if live.abandoned or live.consecutive_failures:
+            # The run was fine; the sheet is not. Said out loud because those
+            # rows still show the previous cycle's prices, and a stale price
+            # nobody knows is stale is the worst thing this system can produce.
+            spans = ", ".join(f"{a}-{b}" for a, b in live.abandoned) or "the last block"
+            detail = (
+                f"the Output tab is behind the database. Rows not written: {spans}. "
+                f"{live.failures} flush(es) failed. The database is complete; run "
+                f"`txtav sheet-push` to rebuild the tab from it."
+            )
+            db.log_event(conn, "warning", "sheet_behind", detail)
+            alerts.send(settings.alert_webhook, "TXT sheet is behind the database", detail)
 
     if report.halted is None:
         finish_cycle_if_complete(conn, cycle_id)
@@ -449,8 +481,11 @@ def _attempt(
             last_error = decision.detail
             log.warning("transport_retry", pn=pn, attempt=attempt, detail=decision.detail)
             # On top of the pacer wait, because a connection fault often needs
-            # a moment to clear and the pacer only guarantees a floor.
-            time.sleep(settings.backoff_base_seconds * (2 ** (attempt - 1)))
+            # a moment to clear and the pacer only guarantees a floor. Skipped
+            # on the final attempt: there is nothing left to back off for, and
+            # at the default settings that was 20 seconds burnt per failed part.
+            if attempt < settings.max_network_retries:
+                time.sleep(settings.backoff_base_seconds * (2 ** (attempt - 1)))
             continue
 
         if fetched.decision.should_stop:
@@ -466,12 +501,36 @@ def _attempt(
 
         try:
             return None, extract.extract(fetched.html, pn), None, fetched.html
-        except extract.ExtractionError as exc:
+        except (extract.ExtractionError, rules.FieldError) as exc:
             # The page loaded and the guard was happy, yet it is not a part
-            # page. That is a changed site or a new state nobody has seen, and
-            # guessing at it is how wrong prices reach the sheet.
+            # page, or a field we can see holds something we cannot read. That
+            # is a changed site or a new state nobody has seen, and guessing at
+            # it is how wrong prices reach the sheet.
+            #
+            # rules.FieldError belongs here and not only ExtractionError. Both
+            # derive from ValueError but neither from the other, so catching
+            # one alone let the other out of the run loop entirely: on
+            # 2026-10-06 a heading reading "Your Price: Call for pricing" took
+            # the whole process down with a traceback, leaving the part
+            # in_flight, no halt recorded and no alert sent. A stop this
+            # project cannot explain afterwards is worse than one it can.
             return (
                 guard.Decision(guard.Verdict.HALT, "unrecognised_page", f"{pn}: {exc}"),
+                None,
+                str(exc),
+                fetched.html,
+            )
+        except Exception as exc:  # noqa: BLE001 - a halt beats dying silently
+            # Anything else from the extractor is a bug in it rather than a
+            # state of the portal, but the response has to be the same: stop,
+            # write down why, and tell somebody. Letting it propagate loses all
+            # three.
+            return (
+                guard.Decision(
+                    guard.Verdict.HALT,
+                    "extractor_failed",
+                    f"{pn}: {type(exc).__name__}: {exc}",
+                ),
                 None,
                 str(exc),
                 fetched.html,

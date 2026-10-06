@@ -62,6 +62,17 @@ HALT_PHRASES = (
 REAUTH_PHRASES = ("hello, log in", "my account log in register", "session has expired")
 REAUTH_URL_MARKERS = ("/account/login", "/account/signin", "/login?", "idp.", "okta")
 
+# Playwright's wording when the browser, context or page has died under us.
+# This is our own process failing, not the portal, and it should not be filed
+# alongside a 403 in the halt log.
+BROWSER_GONE = (
+    "target page, context or browser has been closed",
+    "target closed",
+    "browser has been closed",
+    "browser has disconnected",
+    "browser closed",
+)
+
 _WS = re.compile(r"\s+")
 
 
@@ -108,6 +119,20 @@ def assess_transport(exc: BaseException) -> Decision:
     """
     name = type(exc).__name__
     message = str(exc).lower()
+
+    # A dead browser, told apart from a refusal by the portal. Still a halt,
+    # because nothing should carry on against a browser that is not there, but
+    # under its own kind: the detail an operator reads should say "restart it"
+    # rather than send them looking for a block that never happened.
+    if any(marker in message for marker in BROWSER_GONE):
+        return Decision(
+            Verdict.HALT,
+            "browser_gone",
+            f"the browser went away, not the portal ({name}: {exc}). Nothing "
+            f"suggests we were blocked; check the machine stayed up, then clear "
+            f"this halt and start again. The run resumes where it stopped.",
+        )
+
     transport = (
         "timeout",
         "net::err",

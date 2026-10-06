@@ -9,13 +9,23 @@ dependencies = [
     "structlog>=24.4",
     "lxml>=5.3",
     "playwright>=1.63",
+    # Writing the client's Google Sheet. Imported inside txtav.sheets rather
+    # than at module scope, which is why their absence did not show up here
+    # sooner: live_sheet.build swallows the failure and returns None, so an
+    # install without these would run a whole 14 day cycle with the sheet
+    # quietly never updating.
+    "google-api-python-client>=2.149",
+    "google-auth>=2.35",
+    "google-auth-oauthlib>=1.2",
+    # The part list is never read with openpyxl: txtav.xlsx_reader exists
+    # because openpyxl coerces the 2,930 numerically stored part numbers into
+    # floats and dates. But `txtav export` writes a real workbook with it, and
+    # that is the default output format, so it is a runtime dependency.
+    "openpyxl>=3.1",
 ]
 
-# openpyxl is a test-only dependency. The part list is read by txtav.xlsx_reader
-# instead, because openpyxl coerces the 2,930 numerically stored part numbers in
-# the client's sheet into floats and dates. See that module's docstring.
 [project.optional-dependencies]
-dev = ["pytest>=8.3", "openpyxl>=3.1"]
+dev = ["pytest>=8.3"]
 
 [build-system]
 requires = ["hatchling"]

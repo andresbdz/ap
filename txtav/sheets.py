@@ -247,6 +247,28 @@ def ensure_size(service, sheet_id: str, tab: str, rows: int, columns: int) -> bo
     return True
 
 
+def write_header(service, sheet_id: str, tab: str, columns: Sequence[str]) -> int:
+    """Write row 1. A full push owns the header as well as the data.
+
+    Without this a push can only repair the rows below a header it assumes is
+    intact, and on 2026-10-06 the header itself had been overwritten, leaving
+    nothing able to put the sheet back from the database.
+    """
+    result = execute_with_retry(
+        service.spreadsheets()
+        .values()
+        .update(
+            spreadsheetId=sheet_id,
+            range=f"{tab}!A1:{column_letter(len(columns))}1",
+            valueInputOption="RAW",
+            body={"values": [list(columns)]},
+        )
+    )
+    cells = int(result.get("updatedCells", 0))
+    log.info("sheet_header_written", columns=len(columns))
+    return cells
+
+
 def write_range(
     service,
     sheet_id: str,

@@ -25,8 +25,10 @@ PRICE_REFERENCE = "TXT"
 # 308,22 as 30822. Anchoring on the dollar sign avoids that.
 _USD = re.compile(r"\$\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)")
 
-# "2 IN STOCK", "45 IN STOCK"
-_QTY = re.compile(r"([0-9][0-9,]*)\s*IN\s+STOCK", re.IGNORECASE)
+# "2 IN STOCK", "45 IN STOCK". Public because the extractor matches the same
+# shape against individual page nodes; two copies of this pattern in two modules
+# is two places for the portal's wording to be half updated.
+STOCK = re.compile(r"\b([0-9][0-9,]*)\s*IN\s+STOCK\b", re.IGNORECASE)
 
 
 class FieldError(ValueError):
@@ -61,7 +63,7 @@ def parse_quantity(text: str | None) -> int | None:
     stripped = text.strip()
     if not stripped:
         return None
-    m = _QTY.search(stripped)
+    m = STOCK.search(stripped)
     if not m:
         raise FieldError(f"no stock count found in {stripped!r}")
     return int(m.group(1).replace(",", ""))

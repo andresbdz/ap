@@ -107,6 +107,18 @@ class TestPacer:
             waited = p.wait()
             assert 9.0 - 1e-9 <= waited <= 13.0 + 1e-9
 
+    def test_jitter_keeps_the_mean_on_the_interval(self):
+        # The commitment is a rate over the cycle, not a floor on one gap, and
+        # the mean is the part that decides whether 109,589 parts fit in 14 days.
+        # Jittering upwards only would make the interval a true floor and move
+        # the mean to 12.0 s, finishing on day 15.
+        clock = FakeClock()
+        p = pacer.Pacer(11.0, 2.0, sleep=clock.sleep, monotonic=clock.monotonic)
+        p.wait()
+        gaps = [p.wait() for _ in range(2000)]
+
+        assert abs(sum(gaps) / len(gaps) - 11.0) < 0.2
+
     def test_negative_interval_is_rejected(self):
         with pytest.raises(ValueError):
             pacer.Pacer(-1.0)

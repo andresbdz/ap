@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 STATUS_PENDING = "pending"
 STATUS_IN_FLIGHT = "in_flight"
@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS parts (
     dedupe_key   TEXT NOT NULL,
     wh           TEXT NOT NULL,
     source_row   INTEGER NOT NULL,
+    -- The row this part occupies in the Output tab. Not derivable from
+    -- source_row: that counts every row of the input tab, including the 200
+    -- MHI and BBD rows which have no place in a TXT only output. Stored so the
+    -- two addressing schemes cannot drift apart again.
+    output_row   INTEGER NOT NULL DEFAULT 0,
     path_hostile INTEGER NOT NULL DEFAULT 0,
     first_seen   TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -67,6 +72,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     PRIMARY KEY (cycle_id, pn)
 );
 CREATE INDEX IF NOT EXISTS jobs_pending ON jobs(cycle_id, status);
+-- The primary key is (cycle_id, pn), so pn is not its leading column and
+-- cannot serve a foreign key check. Without this, deleting the parts table on
+-- a re-import scans every job row once per part: 109,589 full scans, which
+-- hung for minutes before this index existed.
+CREATE INDEX IF NOT EXISTS jobs_pn ON jobs(pn);
 
 -- list_price, discount_pct and tab_active are not required by the output
 -- sheet. They are recorded so that if the client later changes their mind
@@ -94,6 +104,8 @@ CREATE TABLE IF NOT EXISTS results (
     scraped_at     TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (cycle_id, pn)
 );
+-- Same reason as jobs_pn: pn is not the leading column of the primary key.
+CREATE INDEX IF NOT EXISTS results_pn ON results(pn);
 
 -- Halts, auth expiry, selector misses. Append only; this is what the daily
 -- summary and the post mortem of any stoppage are built from.
@@ -151,6 +163,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ):
         if column not in existing:
             conn.execute(f"ALTER TABLE results ADD COLUMN {column} {definition}")
+
+    part_columns = {row["name"] for row in conn.execute("PRAGMA table_info(parts)")}
+    if "output_row" not in part_columns:
+        conn.execute("ALTER TABLE parts ADD COLUMN output_row INTEGER NOT NULL DEFAULT 0")
 
 
 @contextmanager

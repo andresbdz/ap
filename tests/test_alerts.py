@@ -14,8 +14,9 @@ def conn(tmp_path) -> sqlite3.Connection:
     connection = db.connect(tmp_path / "t.db")
     with db.transaction(connection):
         connection.executemany(
-            "INSERT INTO parts(pn, dedupe_key, wh, source_row) VALUES (?,?,'TXT',?)",
-            [(f"PN-{i}", f"PN-{i}", i) for i in range(1, 11)],
+            "INSERT INTO parts(pn, dedupe_key, wh, source_row, output_row)"
+            " VALUES (?,?,'TXT',?,?)",
+            [(f"PN-{i}", f"PN-{i}", i + 200, i + 1) for i in range(1, 11)],
         )
         connection.execute("INSERT INTO cycles(id) VALUES (1)")
         statuses = (
@@ -77,8 +78,9 @@ class TestDailyReport:
         try:
             with db.transaction(fresh):
                 fresh.executemany(
-                    "INSERT INTO parts(pn, dedupe_key, wh, source_row) VALUES (?,?,'TXT',?)",
-                    [(f"P{i}", f"P{i}", i) for i in range(5)],
+                    "INSERT INTO parts(pn, dedupe_key, wh, source_row, output_row)"
+            " VALUES (?,?,'TXT',?,?)",
+                    [(f"P{i}", f"P{i}", i + 200, i + 2) for i in range(5)],
                 )
             report = alerts.build_daily_report(fresh)
             assert report.total_parts == 5

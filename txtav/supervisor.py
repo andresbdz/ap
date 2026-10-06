@@ -18,10 +18,10 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 
-from txtav import alerts, db, logging_setup, runner
+from txtav import alerts, db, guard, logging_setup, runner
 from txtav.config import Settings
 from txtav.navigator import Navigator, browser_session
-from txtav.pacer import in_window
+from txtav.pacer import Pacer, in_window
 
 log = logging_setup.get_logger("txtav.supervisor")
 
@@ -41,6 +41,17 @@ PASS_SLEEP_SECONDS = 5
 # the same reason. 200 parts is a little under 40 minutes at 11 seconds each,
 # so every limit, the halt state and the session are rechecked that often.
 PASS_PARTS = 200
+
+# Passes before the browser is replaced. One Chromium tab is asked to navigate
+# 109,589 pages over 14 days, and nothing in a renderer is designed for that:
+# memory grows and there is no way to give it back short of a new context. The
+# profile directory holds the session, so closing and reopening costs a couple
+# of seconds and loses nothing. At 200 parts a pass this is a fresh browser
+# roughly every five hours.
+#
+# Stated as a precaution, not a fix: no leak has been measured here. It is
+# cheap, and the failure it guards against is a process dying on day nine.
+SESSION_PASSES = 8
 
 
 @dataclass
@@ -93,78 +104,116 @@ def supervise(
     max_passes: int | None = None,
     max_hours: float | None = None,
     pass_parts: int = PASS_PARTS,
+    session_passes: int = SESSION_PASSES,
     sleep=time.sleep,
     now=None,
 ) -> SupervisorReport:
-    """Keep running passes until stopped, halted, or a limit is reached."""
+    """Keep running passes until stopped, halted, or a limit is reached.
+
+    The browser is opened per segment of `session_passes` passes rather than
+    once for the whole fourteen days, and is closed while the loop is idle or
+    outside its operating window. The pacer and the failure tripwire, on the
+    other hand, live for the whole call: built per pass they forgot what came
+    before, which let the first request of every pass skip its wait and reset
+    the failure count every 200 parts.
+    """
     from datetime import datetime
 
     clock = now or datetime.now
     report = SupervisorReport()
     stopper = Stopper()
     stopper.install()
+    pace = Pacer(settings.request_interval_seconds, settings.jitter_seconds)
+    tripwire = guard.ConsecutiveFailureTripwire(settings.consecutive_failure_halt)
 
-    with browser_session(settings.profile_dir, settings.page_timeout_seconds) as page:
-        navigator = Navigator(page, settings.base_url)
+    def stop_now() -> str:
+        """Why the loop should end, or an empty string to carry on."""
+        if stopper.requested:
+            return f"asked to stop ({stopper.signal_name})"
+        if max_passes is not None and report.passes >= max_passes:
+            return "reached the pass limit"
+        if max_hours is not None and report.elapsed_hours >= max_hours:
+            return "reached the time limit"
 
-        while True:
-            if stopper.requested:
-                report.stopped_because = f"asked to stop ({stopper.signal_name})"
-                break
-            if max_passes is not None and report.passes >= max_passes:
-                report.stopped_because = "reached the pass limit"
-                break
-            if max_hours is not None and report.elapsed_hours >= max_hours:
-                report.stopped_because = "reached the time limit"
-                break
+        halt = db.open_halt(conn)
+        if halt is not None:
+            log.critical("supervisor_halted", kind=halt["kind"], detail=halt["detail"])
+            alerts.send(
+                settings.alert_webhook,
+                f"TXT run halted: {halt['kind']}",
+                f"{halt['detail']}\n\nNothing further will run until this is "
+                f"cleared by hand.",
+            )
+            return f"halted: {halt['kind']}"
+        return ""
 
-            halt = db.open_halt(conn)
-            if halt is not None:
-                report.stopped_because = f"halted: {halt['kind']}"
-                log.critical(
-                    "supervisor_halted", kind=halt["kind"], detail=halt["detail"]
+    while True:
+        report.stopped_because = stop_now()
+        if report.stopped_because:
+            break
+
+        if not in_window(clock(), settings.window_start, settings.window_end):
+            # Checked before the browser is opened, so an overnight window does
+            # not leave an idle browser holding a session open all day.
+            log.info("outside_operating_window", sleeping=IDLE_SLEEP_SECONDS)
+            sleep(IDLE_SLEEP_SECONDS)
+            continue
+
+        idle = False
+        with browser_session(settings.profile_dir, settings.page_timeout_seconds) as page:
+            navigator = Navigator(page, settings.base_url)
+
+            for _ in range(max(1, session_passes)):
+                report.stopped_because = stop_now()
+                if report.stopped_because:
+                    break
+                if not in_window(clock(), settings.window_start, settings.window_end):
+                    break  # the outer loop sleeps, with the browser closed
+
+                if not navigator.is_signed_in():
+                    report.stopped_because = "session expired"
+                    log.critical("supervisor_session_expired")
+                    alerts.send(
+                        settings.alert_webhook,
+                        "TXT session expired",
+                        "The portal session has lapsed. Someone needs to run "
+                        "`txtav login` and sign in by hand, including the 2FA code. "
+                        "Nothing is lost; the run resumes where it stopped.",
+                    )
+                    break
+
+                result = runner.run(
+                    conn,
+                    navigator,
+                    settings,
+                    limit=pass_parts,
+                    pace=pace,
+                    tripwire=tripwire,
                 )
-                alerts.send(
-                    settings.alert_webhook,
-                    f"TXT run halted: {halt['kind']}",
-                    f"{halt['detail']}\n\nNothing further will run until this is "
-                    f"cleared by hand.",
-                )
-                break
+                report.passes += 1
+                report.parts += result.attempted
 
-            if not in_window(clock(), settings.window_start, settings.window_end):
-                log.info("outside_operating_window", sleeping=IDLE_SLEEP_SECONDS)
-                sleep(IDLE_SLEEP_SECONDS)
-                continue
+                if result.halted is not None:
+                    report.stopped_because = f"halted: {result.halted.kind}"
+                    break
 
-            if not navigator.is_signed_in():
-                report.stopped_because = "session expired"
-                log.critical("supervisor_session_expired")
-                alerts.send(
-                    settings.alert_webhook,
-                    "TXT session expired",
-                    "The portal session has lapsed. Someone needs to run "
-                    "`txtav login` and sign in by hand, including the 2FA code. "
-                    "Nothing is lost; the run resumes where it stopped.",
-                )
-                break
-
-            result = runner.run(conn, navigator, settings, limit=pass_parts)
-            report.passes += 1
-            report.parts += result.attempted
-
-            if result.halted is not None:
-                report.stopped_because = f"halted: {result.halted.kind}"
-                break
-
-            if result.attempted == 0:
-                # Either the cycle is complete and the next is not due, or the
-                # queue is momentarily empty. Either way there is nothing to be
-                # gained from asking again immediately.
-                log.info("nothing_to_do", sleeping=IDLE_SLEEP_SECONDS)
-                sleep(IDLE_SLEEP_SECONDS)
-            else:
+                if result.attempted == 0:
+                    # Either the cycle is complete and the next is not due, or
+                    # the queue is momentarily empty. Either way there is
+                    # nothing to be gained from asking again immediately, and
+                    # nothing to be gained from holding the browser while we
+                    # wait.
+                    idle = True
+                    break
                 sleep(PASS_SLEEP_SECONDS)
+
+        if report.stopped_because:
+            break
+        if idle:
+            log.info("nothing_to_do", sleeping=IDLE_SLEEP_SECONDS)
+            sleep(IDLE_SLEEP_SECONDS)
+        else:
+            log.info("browser_recycled", passes=report.passes)
 
     log.info(
         "supervisor_finished",

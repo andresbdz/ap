@@ -107,14 +107,44 @@ def test_flags_part_numbers_needing_the_search_box(conn, workbook):
     assert hostile == {"000-110105-52U/P"}
 
 
-def test_reimport_replaces_rather_than_appends(conn, workbook):
+def test_reimport_updates_rather_than_wiping(conn, workbook):
+    # A cycle in progress has jobs and results pointing at these rows, so
+    # deleting the table fails the foreign key check outright. An import is
+    # also nearly always a refresh of the same list, per the scope.
     first = workbook([("6622168-22", "TXT"), ("260-1014-33", "TXT")])
     importer.import_parts(conn, first)
-    second = workbook([("9912125-2EX", "TXT")])
+    second = workbook([("260-1014-33", "TXT"), ("9912125-2EX", "TXT")])
     report = importer.import_parts(conn, second)
 
-    assert report.imported == 1
-    assert conn.execute("SELECT COUNT(*) c FROM parts").fetchone()["c"] == 1
+    assert report.imported == 2
+    stored = {r["pn"] for r in conn.execute("SELECT pn FROM parts")}
+    assert stored == {"6622168-22", "260-1014-33", "9912125-2EX"}
+
+
+def test_a_part_that_left_the_list_is_reported_not_deleted(conn, workbook):
+    # Its results are still attached to it, and discarding a price someone may
+    # be looking at is not a decision an import should take by itself.
+    importer.import_parts(conn, workbook([("GONE-1", "TXT"), ("STAYS-1", "TXT")]))
+    report = importer.import_parts(conn, workbook([("STAYS-1", "TXT")]))
+
+    assert report.departed == ["GONE-1"]
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM parts WHERE pn = 'GONE-1'"
+    ).fetchone()["c"] == 1
+
+
+def test_output_rows_are_consecutive_from_two(conn, workbook):
+    # The output tab has a header at row 1 and one row per TXT part after it.
+    # Source rows cannot serve: the real input tab carries 200 MHI and BBD rows
+    # before the first TXT part.
+    path = workbook(
+        [("MHI-1", "MHI"), ("MHI-2", "MHI"), ("A-1", "TXT"), ("A-2", "TXT")]
+    )
+    importer.import_parts(conn, path)
+
+    rows = list(conn.execute("SELECT pn, source_row, output_row FROM parts ORDER BY output_row"))
+    assert [r["output_row"] for r in rows] == [2, 3]
+    assert [r["source_row"] for r in rows] == [4, 5]
 
 
 def test_missing_input_tab_is_an_error(conn, tmp_path):

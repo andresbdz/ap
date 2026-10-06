@@ -85,10 +85,20 @@ def in_window(now: datetime, start: time_of_day | None, end: time_of_day | None)
 
 
 class Pacer:
-    """Keeps at least `interval` seconds between the starts of two requests.
+    """Spaces the starts of two requests by `interval` seconds on average.
 
     Measuring from start to start rather than sleeping a fixed amount after
     each one means a slow page does not push the whole schedule back.
+
+    `interval` is a mean, not a floor, and the distinction is worth stating
+    because the docstring here used to claim a floor. Jitter is spread either
+    side of it, so at the agreed 11.0 s with 2.0 s of jitter the gaps fall
+    between 9 s and 13 s. That is deliberate: the commitment is a request rate
+    over the cycle, 109,589 parts in 14 days, and spreading the jitter
+    symmetrically is what keeps the mean on 11.0 s and the cycle on 14 days.
+    Adding jitter only upwards would make 11.0 s a true floor but move the mean
+    to 12.0 s, which finishes the cycle on day 15 and misses the date the client
+    was given. There is no slack in the schedule to pay for a floor with.
     """
 
     def __init__(

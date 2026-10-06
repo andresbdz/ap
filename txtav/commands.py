@@ -8,17 +8,11 @@ from pathlib import Path
 from txtav import alerts, db, exporter, navigator, runner, supervisor
 from txtav.config import load_settings
 
-OUTPUT_COLUMNS = (
-    "PART NUMBER",
-    "Alternate part number",
-    "Description",
-    "Condition code",
-    "Quantity",
-    "Outright price",
-    "Sale price",
-    "Core value",
-    "Price reference",
-)
+# Taken from the exporter rather than restated. This was a second copy of the
+# column order and it had already drifted: it still listed the nine columns of
+# the sample workbook, without Type or Date Processed, so `txtav results`
+# printed a layout the sheet no longer has.
+OUTPUT_COLUMNS = exporter.COLUMNS
 
 
 def _run(args: argparse.Namespace, *, dry_run: bool) -> int:
@@ -119,7 +113,9 @@ def cmd_results(args: argparse.Namespace) -> int:
                         row["outright_price"],
                         row["sale_price"],
                         row["core_value"],
+                        row["part_type"],
                         row["price_ref"],
+                        (row["scraped_at"] or "")[:10],
                     )
                 )
             )
@@ -183,6 +179,7 @@ def cmd_supervise(args: argparse.Namespace) -> int:
             max_passes=args.max_passes,
             max_hours=args.max_hours,
             pass_parts=args.pass_parts,
+            session_passes=args.session_passes,
         )
     finally:
         conn.close()
@@ -231,6 +228,14 @@ def register(sub) -> None:
         default=supervisor.PASS_PARTS,
         help="parts per pass; the loop only rechecks limits, halts and the "
         "session between passes",
+    )
+    p_sup.add_argument(
+        "--session-passes",
+        type=int,
+        default=supervisor.SESSION_PASSES,
+        help="passes before the browser is closed and reopened; the session "
+        "lives in the profile, so this costs a couple of seconds and bounds "
+        "how long one Chromium tab has to stay healthy",
     )
     p_sup.set_defaults(func=cmd_supervise)
 

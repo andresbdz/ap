@@ -47,7 +47,12 @@ class Settings(BaseSettings):
     # Reliability
     max_network_retries: int = 3
     backoff_base_seconds: float = 5.0
-    consecutive_failure_halt: int = 3
+    # Consecutive failed parts before the run halts for a human. A string of
+    # failures with no single cause is the shape of silent throttling, so this
+    # has to be low; but every halt is sticky and costs a person, and at 3 a
+    # brief network wobble during the night was enough to stop the run until
+    # morning. Each failure is already three exhausted attempts of its own.
+    consecutive_failure_halt: int = 8
     page_timeout_seconds: int = 45
 
     # Portal

@@ -35,8 +35,9 @@ def conn(settings) -> sqlite3.Connection:
     connection = db.connect(settings.db_path)
     with db.transaction(connection):
         connection.executemany(
-            "INSERT INTO parts(pn, dedupe_key, wh, source_row) VALUES (?,?,'TXT',?)",
-            [(f"PN-{i}", f"PN-{i}", i) for i in range(1, 4)],
+            "INSERT INTO parts(pn, dedupe_key, wh, source_row, output_row)"
+            " VALUES (?,?,'TXT',?,?)",
+            [(f"PN-{i}", f"PN-{i}", i + 200, i + 1) for i in range(1, 4)],
         )
     yield connection
     connection.close()
@@ -187,6 +188,64 @@ class TestIdling:
         )
         assert harness["runs"] == []
         assert report.passes == 0
+
+
+class TestTheBrowserIsNotHeldForFourteenDays:
+    """One Chromium tab is asked to navigate 109,589 pages over a fortnight.
+
+    Nothing in a renderer is built for that and there is no way to hand memory
+    back short of a new context. The session lives in the profile directory, so
+    closing and reopening costs a couple of seconds and loses nothing.
+    """
+
+    def _counting_sessions(self, monkeypatch) -> list[int]:
+        opened: list[int] = []
+
+        class FakeSession:
+            def __enter__(self):
+                opened.append(1)
+                return object()
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(supervisor, "browser_session", lambda *a, **k: FakeSession())
+        return opened
+
+    def test_it_is_replaced_after_the_configured_passes(
+        self, conn, settings, harness, monkeypatch
+    ):
+        opened = self._counting_sessions(monkeypatch)
+        supervisor.supervise(
+            conn, settings, max_passes=6, session_passes=2, sleep=sleeper(harness)
+        )
+        assert len(opened) == 3, "six passes, two to a browser"
+
+    def test_one_browser_covers_a_whole_segment(
+        self, conn, settings, harness, monkeypatch
+    ):
+        opened = self._counting_sessions(monkeypatch)
+        supervisor.supervise(
+            conn, settings, max_passes=3, session_passes=8, sleep=sleeper(harness)
+        )
+        assert len(opened) == 1, "no reason to reopen inside a segment"
+
+    def test_nothing_is_opened_outside_the_operating_window(
+        self, conn, settings, harness, monkeypatch
+    ):
+        # An overnight window should not leave an idle browser holding a session
+        # open until morning.
+        opened = self._counting_sessions(monkeypatch)
+        settings.window_start = tod(8, 0)
+        settings.window_end = tod(20, 0)
+        supervisor.supervise(
+            conn,
+            settings,
+            max_hours=0.0,
+            sleep=sleeper(harness),
+            now=lambda: datetime(2026, 10, 6, 3, 0),
+        )
+        assert opened == []
 
 
 class TestCleanShutdown:

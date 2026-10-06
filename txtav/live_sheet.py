@@ -6,10 +6,14 @@ needed: parts are processed in the order of their input tab, so the rows that
 finish during a run are always a contiguous block. One request covers a few
 hundred of them.
 
-Failures here are logged and swallowed. The database is the source of truth and
-the sheet is a projection of it; losing a live update costs nothing, because
-the next flush or a `sheet-push` rewrites the same rows. Taking a run down
-because a spreadsheet was briefly unreachable would cost a great deal more.
+Failures here are logged and swallowed: the database is the source of truth and
+taking a run down because a spreadsheet was briefly unreachable would cost far
+more than a late update. But a failed block is remembered and folded into the
+next write, because nothing else would ever go back for it. Each flush covers
+the span that has just finished, so the following one addresses later rows; a
+block dropped on failure would keep the previous cycle's prices in those rows
+until someone ran a full `sheet-push`, and a stale price that reads as current
+is the one outcome this project treats as worse than no price at all.
 """
 
 from __future__ import annotations
@@ -19,6 +23,15 @@ import sqlite3
 from txtav import exporter, logging_setup, sheets
 
 log = logging_setup.get_logger("txtav.live_sheet")
+
+# How many flushes a failed span is carried for before it is given up on. It has
+# to be carried: each flush covers the rows that have just finished, so the next
+# one addresses later rows and a dropped span is a hole nothing returns to. It
+# also has to be bounded: a sheet unreachable for an hour would otherwise grow
+# one span across thousands of rows and rewrite all of it on every attempt.
+# Giving up is recorded, and the run says so at the end, because at that point
+# only a full `sheet-push` will put those rows right.
+MAX_CARRIED_FLUSHES = 5
 
 
 class LiveSheet:
@@ -30,44 +43,81 @@ class LiveSheet:
         self.tab = tab
         self.every = max(1, every)
         self._pending: list[int] = []
+        # The span a previous flush failed to write. Carried forward so the next
+        # one covers it too, rather than leaving a hole nothing returns to.
+        self._unwritten: tuple[int, int] | None = None
         self.flushes = 0
         self.failures = 0
+        self.consecutive_failures = 0
+        # Spans carried past MAX_CARRIED_FLUSHES and then given up on. Non empty
+        # means the sheet is certainly stale in those rows until a full push.
+        self.abandoned: list[tuple[int, int]] = []
 
-    def record(self, source_row: int) -> None:
-        self._pending.append(source_row)
+    def record(self, output_row: int) -> None:
+        self._pending.append(output_row)
 
     @property
     def due(self) -> bool:
         return len(self._pending) >= self.every
 
+    def _span(self) -> tuple[int, int] | None:
+        """The rows to write: what just finished, plus anything still unwritten."""
+        span = None
+        if self._pending:
+            span = (min(self._pending), max(self._pending))
+            self._pending.clear()
+        if self._unwritten is not None:
+            span = (
+                self._unwritten
+                if span is None
+                else (min(span[0], self._unwritten[0]), max(span[1], self._unwritten[1]))
+            )
+        return span
+
     def flush(self, conn: sqlite3.Connection) -> int:
         """Write the pending span. Returns cells written, 0 if nothing or failed."""
-        if not self._pending:
+        span = self._span()
+        if span is None:
             return 0
-
-        first, last = min(self._pending), max(self._pending)
-        self._pending.clear()
+        first, last = span
 
         try:
             rows = exporter.rows_in_range(conn, first, last)
             if not rows:
+                self._unwritten = None
                 return 0
-            # source_row 1 is the input tab's header, and the output tab's
-            # header is row 1 as well, so the two line up directly.
             cells = sheets.write_range(
                 self.service, self.sheet_id, self.tab, rows, first_row=first
             )
-            self.flushes += 1
-            return cells
         except Exception as exc:  # noqa: BLE001 - never take the run down for this
             self.failures += 1
+            self.consecutive_failures += 1
+            carry = self.consecutive_failures < MAX_CARRIED_FLUSHES
+            self._unwritten = (first, last) if carry else None
+            if not carry:
+                self.abandoned.append((first, last))
             log.warning(
                 "live_sheet_flush_failed",
                 first_row=first,
                 last_row=last,
+                retrying_next_flush=carry,
+                consecutive=self.consecutive_failures,
                 error=f"{type(exc).__name__}: {exc}",
             )
+            if not carry:
+                log.error(
+                    "live_sheet_rows_abandoned",
+                    first_row=first,
+                    last_row=last,
+                    detail="these rows still show the previous cycle; "
+                    "run `txtav sheet-push` to rebuild the tab",
+                )
             return 0
+
+        self._unwritten = None
+        self.flushes += 1
+        self.consecutive_failures = 0
+        return cells
 
 
 def build(settings) -> LiveSheet | None:

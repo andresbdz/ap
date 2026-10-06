@@ -52,23 +52,48 @@ def cmd_sheet_push(args: argparse.Namespace) -> int:
     if sheet_id is None:
         return 1
 
+    if args.processed_only:
+        # This used to be allowed, and it was a loaded gun. Skipping unprocessed
+        # parts makes the rows no longer line up with the tab, and the resize
+        # below would then shrink a 109,589 row table to however many have been
+        # done so far. That is precisely the misalignment that took a day to
+        # find and repair on 2026-10-06, reachable from a documented flag.
+        print(
+            "sheet-push cannot write a partial table: row N of the Output tab has\n"
+            "to keep meaning part N, and skipping unprocessed parts would shift\n"
+            "every row and shrink the tab to the number done so far.\n\n"
+            "A full push already leaves unprocessed parts carrying their previous\n"
+            "value, so it is safe at any point in a cycle:\n"
+            "  txtav sheet-push\n\n"
+            "For a sample to look at or send, export a file instead:\n"
+            "  txtav export --processed-only --out data/sample.xlsx"
+        )
+        return 1
+
     creds = sheets.authorise(settings.google_client_secrets, settings.google_token)
     service = sheets.build_service(creds)
 
     # Checked before every write, not just at setup. Writing by position into a
     # reordered sheet would file prices under the wrong heading, and that is the
     # kind of error nobody catches until they have acted on the numbers.
+    #
+    # --repair-header is the way out when the header itself is wrong: a full
+    # push rebuilds the whole tab from the database, so it should be able to
+    # rebuild row 1 too rather than refusing and leaving no way back.
     problems = sheets.check_header(service, sheet_id, settings.sheet_tab, exporter.COLUMNS)
-    if problems:
+    if problems and not args.repair_header:
         print("Refusing to write: the sheet's columns are not what we expect.")
         for problem in problems:
             print(f"  {problem}")
-        print("\nFix the sheet or update exporter.COLUMNS, then try again.")
+        print(
+            "\nFix the sheet, or update exporter.COLUMNS, or rebuild the whole tab\n"
+            "from the database with:  txtav sheet-push --repair-header"
+        )
         return 2
 
     conn = db.connect(settings.db_path)
     try:
-        rows = exporter.all_rows(conn, processed_only=args.processed_only)
+        rows = exporter.all_rows(conn)
     finally:
         conn.close()
 
@@ -89,6 +114,10 @@ def cmd_sheet_push(args: argparse.Namespace) -> int:
     ):
         print(f"Resized {settings.sheet_tab} to {len(rows) + 1:,} rows x {len(exporter.COLUMNS)} columns.")
 
+    if args.repair_header:
+        sheets.write_header(service, sheet_id, settings.sheet_tab, exporter.COLUMNS)
+        print("Rewrote the header row.")
+
     cells = sheets.write_rows(service, sheet_id, settings.sheet_tab, rows)
     print(f"Wrote {len(rows):,} rows ({cells:,} cells) to {settings.sheet_tab}.")
     return 0
@@ -103,9 +132,14 @@ def register(sub) -> None:
     p_push = sub.add_parser("sheet-push", help="overwrite the Output tab from the store")
     p_push.add_argument("--dry-run", action="store_true")
     p_push.add_argument(
+        "--repair-header",
+        action="store_true",
+        help="also rewrite row 1, for when the header itself has been damaged",
+    )
+    p_push.add_argument(
         "--processed-only",
         action="store_true",
-        help="write only parts with a result; leaves the tab's row alignment "
-        "wrong, so only for inspecting a small sample",
+        help="refused: it would shift every row. Use `txtav export "
+        "--processed-only` for a sample instead",
     )
     p_push.set_defaults(func=cmd_sheet_push)

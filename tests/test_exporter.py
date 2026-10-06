@@ -21,11 +21,15 @@ def conn(tmp_path) -> sqlite3.Connection:
     connection = db.connect(tmp_path / "t.db")
     with db.transaction(connection):
         connection.executemany(
-            "INSERT INTO parts(pn, dedupe_key, wh, source_row) VALUES (?,?,'TXT',?)",
+            "INSERT INTO parts(pn, dedupe_key, wh, source_row, output_row)"
+            " VALUES (?,?,'TXT',?,?)",
             [
-                ("9912125-2EX", "9912125-2EX", 1),
-                ("6622168-22", "6622168-22", 2),
-                ("000-110105-52U/P", "000-110105-52U/P", 3),
+                # Source rows start at 201 and output rows at 2: the input tab
+                # carries 200 MHI and BBD rows that the output tab does not, so
+                # the two must never be used interchangeably.
+                ("9912125-2EX", "9912125-2EX", 201, 2),
+                ("6622168-22", "6622168-22", 202, 3),
+                ("000-110105-52U/P", "000-110105-52U/P", 203, 4),
             ],
         )
         connection.execute("INSERT INTO cycles(id) VALUES (1)")
@@ -154,8 +158,8 @@ class TestOverwriteSemantics:
     def test_every_part_gets_a_row_even_if_never_processed(self, conn, tmp_path):
         with db.transaction(conn):
             conn.execute(
-                "INSERT INTO parts(pn, dedupe_key, wh, source_row)"
-                " VALUES ('NEVER-SEEN', 'NEVER-SEEN', 'TXT', 4)"
+                "INSERT INTO parts(pn, dedupe_key, wh, source_row, output_row)"
+                " VALUES ('NEVER-SEEN', 'NEVER-SEEN', 'TXT', 204, 5)"
             )
         exporter.to_csv(conn, tmp_path / "out.csv")
         rows = read_csv(tmp_path / "out.csv")[1:]
@@ -189,6 +193,43 @@ class TestOverwriteSemantics:
         assert rows["6622168-22"][6] == "999.99"
         # Not touched in cycle 2, so cycle 1's value stands.
         assert rows["9912125-2EX"][6] == "7724.69"
+
+
+class TestOutputRowIsNotSourceRow:
+    """The two addressing schemes differ and must never be swapped.
+
+    The input tab carries 200 MHI and BBD rows above the first TXT part, so a
+    part at source row 202 belongs on output row 2. Writing a live update at
+    the source row put 1,148 rows in the wrong place on 2026-10-06, each
+    carrying another part's price.
+    """
+
+    def test_the_fixture_has_them_genuinely_different(self, conn):
+        row = conn.execute(
+            "SELECT source_row, output_row FROM parts WHERE pn = '9912125-2EX'"
+        ).fetchone()
+        assert row["source_row"] != row["output_row"]
+
+    def test_export_order_follows_the_output_row(self, conn, tmp_path):
+        exporter.to_csv(conn, tmp_path / "out.csv")
+        rows = read_csv(tmp_path / "out.csv")[1:]
+        expected = [
+            r["pn"]
+            for r in conn.execute("SELECT pn FROM parts ORDER BY output_row")
+        ]
+        assert [r[0] for r in rows] == expected
+
+    def test_a_range_is_selected_by_output_row(self, conn):
+        # Output rows 2 and 3 are source rows 201 and 202. Asking for 2 to 3
+        # must return the first two parts, not nothing.
+        rows = exporter.rows_in_range(conn, 2, 3)
+        assert [r[0] for r in rows] == ["9912125-2EX", "6622168-22"]
+
+    def test_a_range_given_source_rows_returns_nothing(self, conn):
+        # The guard against the old bug: source row numbers are outside the
+        # output row space entirely, so a mistake shows up as empty rather
+        # than as rows written to the wrong place.
+        assert exporter.rows_in_range(conn, 201, 203) == []
 
 
 class TestTheClientsOwnWorkedExamples:

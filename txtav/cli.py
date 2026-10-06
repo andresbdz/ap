@@ -113,7 +113,14 @@ def cmd_login(args: argparse.Namespace) -> int:
         input("Press Enter here once you are signed in...")
 
         page.goto(dashboard, wait_until="domcontentloaded")
-        page.wait_for_load_state("networkidle")
+        # Not networkidle. It never fires on this portal's dashboard, which
+        # keeps background connections open, so it ran out the full timeout and
+        # threw a traceback at the one person who had just signed in correctly.
+        # navigator.py dropped it for the same reason; this copy was missed.
+        try:
+            page.wait_for_selector("#main, header", timeout=15_000)
+        except Exception:  # noqa: BLE001 - absence is judged below, not here
+            pass
         body = re.sub(r"\s+", " ", page.inner_text("body")).lower()
         logged_out = any(marker in body for marker in LOGGED_OUT_MARKERS)
         current = page.url

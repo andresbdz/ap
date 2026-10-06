@@ -22,8 +22,9 @@ def conn(tmp_path) -> sqlite3.Connection:
     connection = db.connect(tmp_path / "t.db")
     with db.transaction(connection):
         connection.executemany(
-            "INSERT INTO parts(pn, dedupe_key, wh, source_row) VALUES (?,?,'TXT',?)",
-            [(f"P{i}", f"P{i}", i) for i in range(1, 6)],
+            "INSERT INTO parts(pn, dedupe_key, wh, source_row, output_row)"
+            " VALUES (?,?,'TXT',?,?)",
+            [(f"P{i}", f"P{i}", i + 200, i + 1) for i in range(1, 6)],
         )
     yield connection
     connection.close()

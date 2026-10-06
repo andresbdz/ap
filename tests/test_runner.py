@@ -77,8 +77,9 @@ def conn(settings, monkeypatch):
 def seed(conn, pns: list[str]) -> None:
     with db.transaction(conn):
         conn.executemany(
-            "INSERT INTO parts(pn, dedupe_key, wh, source_row) VALUES (?,?,'TXT',?)",
-            [(pn, pn.upper(), i) for i, pn in enumerate(pns, start=1)],
+            "INSERT INTO parts(pn, dedupe_key, wh, source_row, output_row)"
+            " VALUES (?,?,'TXT',?,?)",
+            [(pn, pn.upper(), i + 200, i + 1) for i, pn in enumerate(pns, start=1)],
         )
 
 
@@ -302,4 +303,4 @@ class TestResume:
         conn.execute("UPDATE jobs SET status = 'in_flight' WHERE pn = '6622168-22'")
 
         assert runner.reset_stale(conn, cycle_id) == 1
-        assert runner.pending(conn, cycle_id, None) == [("6622168-22", 1)]
+        assert runner.pending(conn, cycle_id, None) == [("6622168-22", 2)]

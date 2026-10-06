@@ -33,8 +33,9 @@ def conn(tmp_path) -> sqlite3.Connection:
     connection = db.connect(tmp_path / "t.db")
     with db.transaction(connection):
         connection.executemany(
-            "INSERT INTO parts(pn, dedupe_key, wh, source_row) VALUES (?,?,'TXT',?)",
-            [(f"PN-{i}", f"PN-{i}", i) for i in range(2, 12)],
+            "INSERT INTO parts(pn, dedupe_key, wh, source_row, output_row)"
+            " VALUES (?,?,'TXT',?,?)",
+            [(f"PN-{i}", f"PN-{i}", i + 200, i) for i in range(2, 12)],
         )
         connection.execute("INSERT INTO cycles(id) VALUES (1)")
         connection.executemany(
@@ -104,17 +105,39 @@ class TestFailureIsNotFatal:
         assert sheet.flush(conn) == 0
         assert sheet.failures == 1
 
-    def test_a_failed_batch_is_not_retried_forever(self, conn, monkeypatch):
-        # The rows stay in the database and the next full push repairs them,
-        # so holding them pending would only grow the span without end.
+    def test_a_failed_span_is_carried_into_the_next_flush(self, conn, monkeypatch):
+        # Each flush covers the rows that have just finished, so the next one
+        # addresses later rows. A span dropped on failure is a hole nothing ever
+        # returns to, and those rows keep the previous cycle's prices for the
+        # rest of the fortnight while looking exactly like current ones.
+        recorder = RecordingSheets(fail=RuntimeError("503"))
+        monkeypatch.setattr(live_sheet.sheets, "write_range", recorder.write_range)
+        sheet = live_sheet.LiveSheet(None, "sid", "Output", every=2)
+
+        sheet.record(2)
+        sheet.record(3)
+        assert sheet.flush(conn) == 0
+
+        recorder.fail = None  # the sheet comes back
+        sheet.record(4)
+        sheet.flush(conn)
+
+        assert recorder.writes[-1] == (2, 3), "rows 2 to 4, not just the new one"
+
+    def test_a_carried_span_is_eventually_given_up_on(self, conn, monkeypatch):
+        # Bounded, because a sheet unreachable for an hour would otherwise grow
+        # one span across thousands of rows and rewrite all of it every time.
         failing = RecordingSheets(fail=RuntimeError("503"))
         monkeypatch.setattr(live_sheet.sheets, "write_range", failing.write_range)
+        sheet = live_sheet.LiveSheet(None, "sid", "Output", every=1)
 
-        sheet = live_sheet.LiveSheet(None, "sid", "Output", every=2)
         sheet.record(2)
-        sheet.flush(conn)
-        assert sheet.flush(conn) == 0
-        assert sheet.failures == 1
+        for _ in range(live_sheet.MAX_CARRIED_FLUSHES):
+            sheet.flush(conn)
+
+        assert sheet.abandoned == [(2, 2)], "the span the operator has to repair"
+        assert sheet.flush(conn) == 0, "and nothing is carried any further"
+        assert sheet.failures == live_sheet.MAX_CARRIED_FLUSHES
 
 
 class TestBuild:

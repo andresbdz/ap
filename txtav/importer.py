@@ -37,6 +37,7 @@ class ImportReport:
     duplicates: list[tuple[str, int]] = field(default_factory=list)
     blank_pn_rows: list[int] = field(default_factory=list)
     error_cells: list[tuple[str, int]] = field(default_factory=list)
+    departed: list[str] = field(default_factory=list)
     path_hostile: int = 0
 
     def summary(self) -> str:
@@ -48,6 +49,7 @@ class ImportReport:
             f"blank part no:    {len(self.blank_pn_rows)}",
             f"sheet errors:     {len(self.error_cells)}",
             f"need search box:  {self.path_hostile}",
+            f"left the list:    {len(self.departed)}",
         ]
         if self.other_wh:
             others = ", ".join(f"{k}={v}" for k, v in sorted(self.other_wh.items()))
@@ -105,15 +107,39 @@ def import_parts(conn: sqlite3.Connection, xlsx_path: Path | str) -> ImportRepor
         hostile = urls.needs_search_box(pn)
         if hostile:
             report.path_hostile += 1
-        to_insert.append((pn, key, wh.upper(), source_row, int(hostile)))
+        # Output row is the part's rank here plus one for the header, not its
+        # source row: the input tab also carries 200 MHI and BBD rows which
+        # have no place in a TXT only output tab.
+        to_insert.append(
+            (pn, key, wh.upper(), source_row, len(to_insert) + 2, int(hostile))
+        )
 
+    # Upsert rather than replace. A cycle in progress has jobs and results
+    # pointing at these rows, so wiping the table fails the foreign key check
+    # outright; and even where it succeeded it would throw away the history of
+    # a part that is still in the list. The scope says the list rarely changes,
+    # so an import is nearly always a no-op refresh of the same parts.
     with db.transaction(conn):
-        conn.execute("DELETE FROM parts")
         conn.executemany(
-            "INSERT INTO parts(pn, dedupe_key, wh, source_row, path_hostile) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO parts(pn, dedupe_key, wh, source_row, output_row, path_hostile)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(pn) DO UPDATE SET"
+            "   dedupe_key = excluded.dedupe_key,"
+            "   wh = excluded.wh,"
+            "   source_row = excluded.source_row,"
+            "   output_row = excluded.output_row,"
+            "   path_hostile = excluded.path_hostile",
             to_insert,
         )
+        # Parts that have left the list are reported, not deleted: results are
+        # tied to them, and discarding a price someone may still be looking at
+        # is not a decision an import should take by itself.
+        current = {pn for pn, *_ in to_insert}
+        report.departed = [
+            row["pn"]
+            for row in conn.execute("SELECT pn FROM parts WHERE wh = ?", (TXT_MARKER,))
+            if row["pn"] not in current
+        ]
     report.imported = len(to_insert)
 
     db.log_event(

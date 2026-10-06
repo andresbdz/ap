@@ -44,7 +44,7 @@ Operational procedures are in [RUNBOOK.md](RUNBOOK.md).
 
 ```bash
 uv venv --python 3.12 .venv
-uv pip install -e ".[dev]"
+uv pip install -e ".[dev]"      # `-e .` alone on a server; dev adds only pytest
 cp .env.example .env
 ```
 

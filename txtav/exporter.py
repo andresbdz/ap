@@ -66,7 +66,7 @@ FROM parts p
 LEFT JOIN results r
   ON r.pn = p.pn
  AND r.cycle_id = (SELECT MAX(cycle_id) FROM results x WHERE x.pn = p.pn)
-ORDER BY p.source_row
+ORDER BY p.output_row
 """
 
 
@@ -144,21 +144,25 @@ def _row_values(row, *, include_extras: bool) -> list[object]:
 
 
 RANGE_SELECT = SELECT.replace(
-    "ORDER BY p.source_row", "WHERE p.source_row BETWEEN ? AND ? ORDER BY p.source_row"
+    "ORDER BY p.output_row", "WHERE p.output_row BETWEEN ? AND ? ORDER BY p.output_row"
 )
 
 
 def rows_in_range(
-    conn: sqlite3.Connection, first_source_row: int, last_source_row: int
+    conn: sqlite3.Connection, first_output_row: int, last_output_row: int
 ) -> list[list[object]]:
-    """Rows for a contiguous slice of the input tab, in that tab's order.
+    """Rows for a contiguous slice of the output tab, by output row.
 
-    Used for live updates during a run. Parts are processed in source_row
-    order, so what finishes is always a contiguous block and can go to the
-    sheet as one request rather than a rewrite of the whole table.
+    Used for live updates during a run. Parts are processed in order, so what
+    finishes is always a contiguous block and can go to the sheet as one
+    request rather than a rewrite of the whole table.
+
+    Addressed by output row, never source row. The two differ by the 200 MHI
+    and BBD rows at the top of the input tab, and using the source row for a
+    live write put 1,148 rows in the wrong place on 2026-10-06.
     """
     out: list[list[object]] = []
-    for row in conn.execute(RANGE_SELECT, (first_source_row, last_source_row)):
+    for row in conn.execute(RANGE_SELECT, (first_output_row, last_output_row)):
         out.append(_row_values(row, include_extras=False))
     return out
 
