@@ -115,6 +115,40 @@ class TestStoppingConditions:
         assert len(harness["alerts"]) == 1
 
 
+class TestEachPassIsBounded:
+    """The loop only regains control between passes.
+
+    Measured on 2026-10-06: a supervise started with --max-hours 1.5 was still
+    going at 2.5 hours, because its one pass had taken the whole queue of
+    109,351 parts. SIGINT and SIGTERM were recorded and never acted on for the
+    same reason, and neither was the session checked again in all that time.
+    """
+
+    def test_a_limit_is_passed_to_every_run(self, conn, settings, monkeypatch, harness):
+        seen: list[int | None] = []
+
+        def capture(conn, navigator, settings, **kwargs):
+            seen.append(kwargs.get("limit"))
+            return supervisor.runner.RunReport(attempted=1, success=1)
+
+        monkeypatch.setattr(supervisor.runner, "run", capture)
+        supervisor.supervise(
+            conn, settings, max_passes=3, pass_parts=200, sleep=sleeper(harness)
+        )
+
+        assert seen == [200, 200, 200]
+
+    def test_the_default_pass_is_small_enough_to_recheck_often(self):
+        # At 11 seconds a part, a pass must be short enough that an expired
+        # session or a stop request is noticed in minutes, not days.
+        minutes = supervisor.PASS_PARTS * 11 / 60
+        assert minutes < 60, f"a pass would run {minutes:.0f} minutes before any check"
+
+    def test_the_session_is_checked_once_per_pass(self, conn, settings, harness):
+        supervisor.supervise(conn, settings, max_passes=3, sleep=sleeper(harness))
+        assert harness["navigator"].checks == 3
+
+
 class TestLimits:
     def test_stops_after_the_requested_passes(self, conn, settings, harness):
         report = supervisor.supervise(

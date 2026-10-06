@@ -33,6 +33,15 @@ IDLE_SLEEP_SECONDS = 300
 # because the pacer already spaces the requests themselves.
 PASS_SLEEP_SECONDS = 5
 
+# Parts per pass. The loop only regains control between passes, so an
+# unbounded pass means the supervisor checks nothing until the whole cycle is
+# done. Measured on 2026-10-06: a supervise started with --max-hours 1.5 was
+# still going at 2.5 hours, because its single pass had taken the entire queue
+# of 109,351 parts, and SIGINT and SIGTERM were recorded but never acted on for
+# the same reason. 200 parts is a little under 40 minutes at 11 seconds each,
+# so every limit, the halt state and the session are rechecked that often.
+PASS_PARTS = 200
+
 
 @dataclass
 class SupervisorReport:
@@ -83,6 +92,7 @@ def supervise(
     *,
     max_passes: int | None = None,
     max_hours: float | None = None,
+    pass_parts: int = PASS_PARTS,
     sleep=time.sleep,
     now=None,
 ) -> SupervisorReport:
@@ -139,7 +149,7 @@ def supervise(
                 )
                 break
 
-            result = runner.run(conn, navigator, settings)
+            result = runner.run(conn, navigator, settings, limit=pass_parts)
             report.passes += 1
             report.parts += result.attempted
 

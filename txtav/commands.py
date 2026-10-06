@@ -178,7 +178,11 @@ def cmd_supervise(args: argparse.Namespace) -> int:
             )
             return 2
         report = supervisor.supervise(
-            conn, settings, max_passes=args.max_passes, max_hours=args.max_hours
+            conn,
+            settings,
+            max_passes=args.max_passes,
+            max_hours=args.max_hours,
+            pass_parts=args.pass_parts,
         )
     finally:
         conn.close()
@@ -221,6 +225,13 @@ def register(sub) -> None:
     )
     p_sup.add_argument("--max-passes", type=int, default=None)
     p_sup.add_argument("--max-hours", type=float, default=None)
+    p_sup.add_argument(
+        "--pass-parts",
+        type=int,
+        default=supervisor.PASS_PARTS,
+        help="parts per pass; the loop only rechecks limits, halts and the "
+        "session between passes",
+    )
     p_sup.set_defaults(func=cmd_supervise)
 
     p_res = sub.add_parser("results", help="print captured rows")
