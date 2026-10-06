@@ -118,22 +118,48 @@ def all_rows(
     for row in conn.execute(SELECT):
         if processed_only and row["processed_on"] is None:
             continue
-        record: list[object] = [
-            row["pn"],
-            row["alt_pn"] or "",
-            row["description"] or "",
-            row["condition_code"] or "",
-            row["quantity"] if row["quantity"] is not None else "",
-            _cell(_number(row["outright_price"])),
-            _cell(_number(row["sale_price"])),
-            _cell(_number(row["core_value"])),
-            row["part_type"] or "",
-            row["price_ref"] or "",
-            row["processed_on"] or "",
-        ]
-        if include_extras:
-            record.append(row["availability"] or "")
-        out.append(record)
+        out.append(_row_values(row, include_extras=include_extras))
+    return out
+
+
+def _row_values(row, *, include_extras: bool) -> list[object]:
+    """One database row as the client's column order. The single place that
+    decides what goes in which column; everything else writes what this says."""
+    record: list[object] = [
+        row["pn"],
+        row["alt_pn"] or "",
+        row["description"] or "",
+        row["condition_code"] or "",
+        row["quantity"] if row["quantity"] is not None else "",
+        _cell(_number(row["outright_price"])),
+        _cell(_number(row["sale_price"])),
+        _cell(_number(row["core_value"])),
+        row["part_type"] or "",
+        row["price_ref"] or "",
+        row["processed_on"] or "",
+    ]
+    if include_extras:
+        record.append(row["availability"] or "")
+    return record
+
+
+RANGE_SELECT = SELECT.replace(
+    "ORDER BY p.source_row", "WHERE p.source_row BETWEEN ? AND ? ORDER BY p.source_row"
+)
+
+
+def rows_in_range(
+    conn: sqlite3.Connection, first_source_row: int, last_source_row: int
+) -> list[list[object]]:
+    """Rows for a contiguous slice of the input tab, in that tab's order.
+
+    Used for live updates during a run. Parts are processed in source_row
+    order, so what finishes is always a contiguous block and can go to the
+    sheet as one request rather than a rewrite of the whole table.
+    """
+    out: list[list[object]] = []
+    for row in conn.execute(RANGE_SELECT, (first_source_row, last_source_row)):
+        out.append(_row_values(row, include_extras=False))
     return out
 
 

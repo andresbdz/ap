@@ -247,6 +247,40 @@ def ensure_size(service, sheet_id: str, tab: str, rows: int, columns: int) -> bo
     return True
 
 
+def write_range(
+    service,
+    sheet_id: str,
+    tab: str,
+    rows: Sequence[Sequence[object]],
+    first_row: int,
+) -> int:
+    """Write a contiguous block of rows at a known position.
+
+    Parts are processed in the order of the client's input tab, so the rows
+    that finish during a run are always contiguous. That makes a live update
+    one request for a few hundred rows rather than a rewrite of the whole
+    109,589 row table.
+    """
+    if not rows:
+        return 0
+    width = max(len(row) for row in rows)
+    last = first_row + len(rows) - 1
+    body = {"values": [[_cell(value) for value in row] for row in rows]}
+    result = execute_with_retry(
+        service.spreadsheets()
+        .values()
+        .update(
+            spreadsheetId=sheet_id,
+            range=f"{tab}!A{first_row}:{column_letter(width)}{last}",
+            valueInputOption="USER_ENTERED",
+            body=body,
+        )
+    )
+    cells = int(result.get("updatedCells", 0))
+    log.info("sheet_range_written", first_row=first_row, last_row=last, cells=cells)
+    return cells
+
+
 def write_rows(
     service,
     sheet_id: str,

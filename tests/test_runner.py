@@ -302,4 +302,4 @@ class TestResume:
         conn.execute("UPDATE jobs SET status = 'in_flight' WHERE pn = '6622168-22'")
 
         assert runner.reset_stale(conn, cycle_id) == 1
-        assert runner.pending(conn, cycle_id, None) == ["6622168-22"]
+        assert runner.pending(conn, cycle_id, None) == [("6622168-22", 1)]

@@ -40,6 +40,7 @@ class DailyReport:
     not_found: int
     discontinued: int
     quote_only: int
+    not_offered: int
     failed: int
     manual_review: int
     pending: int
@@ -58,6 +59,7 @@ class DailyReport:
             f"  priced        {self.success:,}",
             f"  discontinued  {self.discontinued:,}",
             f"  quote only    {self.quote_only:,}",
+            f"  not offered   {self.not_offered:,}",
             f"  not found     {self.not_found:,}",
             f"  for review    {self.manual_review:,}",
             f"  failed        {self.failed:,}",
@@ -101,6 +103,7 @@ def build_daily_report(conn: sqlite3.Connection) -> DailyReport:
             by_availability[row["availability"]] = int(row["n"])
     discontinued = by_availability.get("no_longer_available", 0)
     quote_only = by_availability.get("price_on_request", 0)
+    not_offered = by_availability.get("no_price_listed", 0)
 
     total = int(conn.execute("SELECT COUNT(*) n FROM parts").fetchone()["n"])
     pending = counts.get("pending", 0) + counts.get("in_flight", 0)
@@ -133,6 +136,7 @@ def build_daily_report(conn: sqlite3.Connection) -> DailyReport:
         not_found=counts.get("not_found", 0),
         discontinued=discontinued,
         quote_only=quote_only,
+        not_offered=not_offered,
         failed=counts.get("failed", 0),
         manual_review=counts.get("manual_review", 0),
         pending=pending,

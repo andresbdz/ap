@@ -38,6 +38,13 @@ AVAILABLE = "available"
 DISCONTINUED = "no_longer_available"
 QUOTE_ONLY = "price_on_request"
 
+# A part the portal describes but does not offer. Distinguishable from the two
+# above by structure rather than wording: those carry YourPriceUS_0="0" and a
+# sentence explaining why, while this page has no price element at all. The
+# rest of it renders normally, so it is a coherent page rather than a broken
+# one. Seen on 000-110029-67.
+NOT_OFFERED = "no_price_listed"
+
 _STOCK = re.compile(r"\b([0-9][0-9,]*)\s*IN\s+STOCK\b", re.IGNORECASE)
 
 
@@ -51,6 +58,7 @@ class PartRecord:
     pn_resolved: str | None = None
     found: bool = False
     availability: str = AVAILABLE
+    price_element_present: bool = True
     description: str | None = None
     quantity: int | None = None
     sale_price: Decimal | None = None
@@ -151,6 +159,7 @@ def extract(page_html: str, pn_requested: str) -> PartRecord:
     # and writing $0.00 into a pricing sheet would be worse than writing blank.
     record.sale_price_rendered = _money(doc, "//h2[contains(.,'Your Price')]")
     raw_usd = _first(doc, "//input[@id='YourPriceUS_0']/@value")
+    record.price_element_present = bool(doc.xpath("//input[@id='YourPriceUS_0']"))
     if raw_usd and record.sale_price_rendered is not None:
         record.sale_price = Decimal(raw_usd.replace(",", ""))
     record.list_price = _money(doc, "//h3[contains(.,'List Price')]")
@@ -200,6 +209,13 @@ def _check(record: PartRecord, pn_requested: str) -> None:
     # and no stock. Those absences are expected and are not worth a human's
     # attention; they are recorded as an availability instead, and counted in
     # the daily summary so the client can see how much of the list is affected.
+    # The portal rendering no price element at all means it is not offering
+    # this part, which is a state of the catalogue rather than a fault. Decided
+    # after the page itself has been read, so a page that failed to render is
+    # still caught by the description check below.
+    if record.availability == AVAILABLE and not record.price_element_present:
+        record.availability = NOT_OFFERED
+
     if record.availability == AVAILABLE:
         if record.sale_price is None:
             record.conflicts.append("part page rendered but carries no USD price")

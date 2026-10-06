@@ -144,6 +144,12 @@ re-login needs a human to read the 2FA code out of the shared mailbox.
 | Signed in | Last working request | Found expired | Idle gap |
 |---|---|---|---|
 | 2026-10-02 08:38 | 2026-10-02 08:54 | 2026-10-02 19:17 | under 10h23m |
+| 2026-10-05 19:17 | 2026-10-05 19:40 | 2026-10-06 11:55 | under 16h15m |
+
+Both observations follow a night with no requests at all. Nothing yet says what
+happens when the job runs continuously, which is the case that actually
+matters: a run makes a request every 11 seconds and never goes idle. The pilot
+answers it at no extra cost.
 
 So the session does not survive a night unattended. Until this is pinned down
 more precisely, assume a human has to sign in at least once a day.

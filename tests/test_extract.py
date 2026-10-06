@@ -207,6 +207,51 @@ class TestQuoteOnlyPart:
         assert record.description
 
 
+class TestPartWithNoPriceElement:
+    """000-110029-67. The portal describes the part but does not offer it.
+
+    Found during a run on 2026-10-06. Unlike a discontinued or quote only part,
+    this page carries no YourPriceUS_0 element at all and no sentence
+    explaining why. Everything else renders: description, dimensions, the
+    alternate part number. So it is a state of the catalogue, not a fault, and
+    routing it to review would bury the rows that genuinely need a person.
+    """
+
+    VERIFY = FIXTURES / "verify" / "000-110029-67.html"
+
+    @pytest.fixture
+    def record(self):
+        if not self.VERIFY.exists():
+            pytest.skip("run scripts/verify_sample.py to capture this page")
+        return extract.extract(self.VERIFY.read_text(encoding="utf-8"), "000-110029-67")
+
+    def test_recognised_as_not_offered(self, record):
+        assert record.found
+        assert record.availability == extract.NOT_OFFERED
+        assert not record.price_element_present
+
+    def test_carries_no_price_or_quantity(self, record):
+        assert record.sale_price is None
+        assert record.quantity is None
+
+    def test_the_rest_of_the_page_still_came_through(self, record):
+        assert record.description == "SKIN OUTBOARD L E ASSEMBLY"
+        assert record.alt_pn == "000-110029-67 U"
+
+    def test_not_routed_to_review(self, record):
+        assert record.conflicts == []
+
+    def test_a_page_with_a_price_element_but_no_price_is_still_flagged(self):
+        # The distinction is structural. If the element is there and empty,
+        # something is wrong and a person should look.
+        html = (FIXTURES / "6622168-22.html").read_text(encoding="utf-8")
+        tampered = html.replace("Your Price", "Price").replace("2 IN STOCK", "")
+        record = extract.extract(tampered, "6622168-22")
+        assert record.price_element_present
+        assert record.availability == extract.AVAILABLE
+        assert record.conflicts
+
+
 class TestPartNotFound:
     """ZZZZ-9999 does not exist. The portal still returns HTTP 200."""
 

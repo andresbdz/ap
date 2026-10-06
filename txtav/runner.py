@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from txtav import alerts, db, extract, guard, logging_setup, redact_page
+from txtav import alerts, db, extract, guard, live_sheet, logging_setup, redact_page
 from txtav.config import Settings
 from txtav.navigator import Navigator
 from txtav.pacer import Pacer
@@ -205,16 +205,23 @@ def reset_stale(conn: sqlite3.Connection, cycle_id: int) -> int:
     return cursor.rowcount
 
 
-def pending(conn: sqlite3.Connection, cycle_id: int, limit: int | None) -> list[str]:
+def pending(
+    conn: sqlite3.Connection, cycle_id: int, limit: int | None
+) -> list[tuple[str, int]]:
+    """Pending parts as (part number, source row), in the input tab's order.
+
+    The source row travels with the part because it is the sheet row that part
+    occupies, which is what makes a live update one contiguous write.
+    """
     sql = (
-        "SELECT j.pn FROM jobs j JOIN parts p ON p.pn = j.pn "
+        "SELECT j.pn, p.source_row FROM jobs j JOIN parts p ON p.pn = j.pn "
         "WHERE j.cycle_id = ? AND j.status = 'pending' ORDER BY p.source_row"
     )
     params: list[object] = [cycle_id]
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
-    return [row["pn"] for row in conn.execute(sql, params)]
+    return [(row["pn"], int(row["source_row"])) for row in conn.execute(sql, params)]
 
 
 def _store(conn: sqlite3.Connection, cycle_id: int, record: extract.PartRecord) -> None:
@@ -290,6 +297,7 @@ def run(
         log.warning("behind_schedule", detail=progress.describe())
         db.log_event(conn, "warning", "behind_schedule", progress.describe())
 
+    live = None if dry_run else live_sheet.build(settings)
     pace = Pacer(settings.request_interval_seconds, settings.jitter_seconds)
     tripwire = guard.ConsecutiveFailureTripwire(settings.consecutive_failure_halt)
 
@@ -301,7 +309,7 @@ def run(
         dry_run=dry_run,
     )
 
-    for pn in queue:
+    for pn, source_row in queue:
         conn.execute(
             "UPDATE jobs SET status = 'in_flight', attempts = attempts + 1,"
             " started_at = datetime('now') WHERE cycle_id = ? AND pn = ?",
@@ -354,6 +362,17 @@ def run(
                 sale=str(record.sale_price),
                 condition=record.condition_code,
             )
+
+        if live is not None:
+            live.record(source_row)
+            if live.due:
+                live.flush(conn)
+
+    if live is not None:
+        # Always flush the tail, including after a halt: the rows are already
+        # in the database and the sheet should show what was actually done
+        # before the stop.
+        live.flush(conn)
 
     if report.halted is None:
         finish_cycle_if_complete(conn, cycle_id)
