@@ -141,10 +141,24 @@ Verification, when something looks wrong:
 
 ## Keeping it running
 
-The machine must stay awake for the whole cycle.
+```bash
+.venv/bin/python -m txtav.cli supervise
+```
+
+That keeps the cycle moving: it runs passes, waits when the queue is empty or
+the cycle is not due yet, and stops the moment anything says it should. Ctrl-C
+stops it cleanly at the next pass boundary. It never retries past a halt; it is
+a scheduler, not a way around the guard.
+
+It stops by itself, with an alert, for two reasons you have to act on:
+
+- **session expired** — run `txtav login`, sign in by hand, start it again
+- **halted** — read the halt first, see above
+
+On a machine that sleeps, wrap it:
 
 ```bash
-caffeinate -dimsu .venv/bin/python -m txtav.cli run
+caffeinate -dimsu .venv/bin/python -m txtav.cli supervise
 ```
 
 Whatever machine is used, **the login must happen on that same machine**: the
@@ -177,6 +191,20 @@ both the IP and the browser environment mid-session.
 | Logs, JSON, rotated at 20 MB, 10 kept | `logs/txtav.log` |
 | Screenshots of stoppages, masked | `screenshots/` |
 | Settings | `.env`, documented in `.env.example` |
+| Google credentials and token | `secrets/`, gitignored |
+| Output spreadsheet | the Google Sheet named by `TXTAV_SHEET_ID` |
 
 The spreadsheet is a projection of the database, never the other way round. If
-the two disagree, the database is right: re-export.
+the two disagree, the database is right:
+
+```bash
+.venv/bin/python -m txtav.cli sheet-push
+```
+
+That rewrites all 109,589 rows in about 50 seconds. The sheet also updates
+during a run, so a push is only needed after a failed live update or if someone
+has edited the sheet by hand.
+
+A row with a blank price is not necessarily a fault. `summary` counts the three
+reasons separately: discontinued, sold on quotation, and listed but not
+offered.

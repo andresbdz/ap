@@ -61,8 +61,15 @@ Put the client's workbook at `data/PN_List_full.xlsx`, or point
 .venv/bin/python -m txtav.cli run                # process pending parts
 .venv/bin/python -m txtav.cli results            # show captured rows
 .venv/bin/python -m txtav.cli halt-clear --id N --by NAME
-.venv/bin/python -m pytest -q            # 191 tests, no network
+.venv/bin/python -m txtav.cli supervise          # run continuously
+.venv/bin/python -m txtav.cli sheet-auth         # one time Google consent
+.venv/bin/python -m txtav.cli sheet-push         # rewrite the whole Output tab
+.venv/bin/python -m pytest -q            # 304 tests, no network
 ```
+
+The sheet also updates while a run is in progress. Parts are processed in the
+order of the client's input tab, so the rows that finish are contiguous and one
+API call covers them; `sheet-push` is for a full rewrite or a repair.
 
 A halt blocks every run until a person clears it. That is deliberate: nothing
 in the code may clear one.
@@ -88,6 +95,12 @@ in the code may clear one.
 | `runner.py` | The run loop: fetch, extract, commit, stop. |
 | `rules.py` | Field logic from the scope document. Pure functions. |
 | `logging_setup.py` | JSON logging with mandatory redaction. |
+| `sheets.py` | Google Sheets API: auth, header check, batched writes. |
+| `live_sheet.py` | Contiguous flushes to the sheet during a run. |
+| `exporter.py` | Results to the client's column layout. |
+| `alerts.py` | Webhook notifications and the daily report. |
+| `supervisor.py` | The long running loop that keeps a cycle moving. |
+| `redact_page.py` | Masking identities before a screenshot. |
 | `cli.py` | Entry point. |
 
 ## Two findings in the client's data
@@ -117,12 +130,19 @@ not perform that substitution ourselves: a part literally named
 A space is meaningful and must not be normalised away. `000-110105-79 U` is a
 real part at $2,038.73, distinct from `000-110105-79` at $1,650.67.
 
-**Discontinued parts show no price and a placeholder zero.** A part marked
-"No longer available" keeps its description and usually offers a replacement
-part number, but renders no price and no stock line while its hidden
-`YourPriceUS_0` reads `0`. The hidden price is only trusted when a displayed
-price corroborates it, so these rows carry a blank price rather than $0.00,
-and the expected absences are not raised for review.
+**A part can legitimately have no price, in three different ways.** All three
+carry a blank price cell rather than $0.00, and none is raised for review: in a
+109,589 part list they would bury the rows that genuinely need a person.
+
+| Availability | How the page looks | Seen on |
+|---|---|---|
+| `no_longer_available` | "No longer available", usually with a replacement part number. `YourPriceUS_0` reads `0` | `000-110105-52U/P` |
+| `price_on_request` | "Please contact us for assistance with pricing". `YourPriceUS_0` reads `0` | `.025 AMS3315 BLK` |
+| `no_price_listed` | No price element at all and no explanation; the rest of the page renders normally | `000-110029-67` |
+
+The last is told apart by structure rather than wording. An empty price element
+still means something is wrong and is still flagged; it is the absence of the
+element that says the portal is not offering the part.
 
 ## Resolved questions
 

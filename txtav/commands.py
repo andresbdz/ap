@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from txtav import alerts, db, exporter, navigator, runner
+from txtav import alerts, db, exporter, navigator, runner, supervisor
 from txtav.config import load_settings
 
 OUTPUT_COLUMNS = (
@@ -163,6 +163,29 @@ def cmd_summary(args: argparse.Namespace) -> int:
     return 2 if report.halt_kind else 0
 
 
+def cmd_supervise(args: argparse.Namespace) -> int:
+    """Run continuously: keep the cycle moving until stopped or halted."""
+    settings = load_settings()
+    conn = db.connect(settings.db_path)
+    try:
+        halt = db.open_halt(conn)
+        if halt is not None:
+            print(
+                f"HALTED: {halt['kind']} raised at {halt['raised_at']}\n"
+                f"  {halt['detail']}\n\n"
+                f"Deal with the cause, then clear it:\n"
+                f"  txtav halt-clear --id {halt['id']} --by <your name>"
+            )
+            return 2
+        report = supervisor.supervise(
+            conn, settings, max_passes=args.max_passes, max_hours=args.max_hours
+        )
+    finally:
+        conn.close()
+    print(report.summary())
+    return 2 if report.stopped_because.startswith("halted") else 0
+
+
 def register(sub) -> None:
     p_dry = sub.add_parser("dryrun", help="fetch a few parts without writing results")
     p_dry.add_argument("--limit", type=int, default=5)
@@ -192,6 +215,13 @@ def register(sub) -> None:
     p_sum = sub.add_parser("summary", help="daily progress report")
     p_sum.add_argument("--send", action="store_true", help="also post to the webhook")
     p_sum.set_defaults(func=cmd_summary)
+
+    p_sup = sub.add_parser(
+        "supervise", help="run continuously until stopped or halted"
+    )
+    p_sup.add_argument("--max-passes", type=int, default=None)
+    p_sup.add_argument("--max-hours", type=float, default=None)
+    p_sup.set_defaults(func=cmd_supervise)
 
     p_res = sub.add_parser("results", help="print captured rows")
     p_res.add_argument("--limit", type=int, default=20)
