@@ -12,14 +12,18 @@ so the layout in the screenshot still matches what an operator would see.
 
 from __future__ import annotations
 
-# Selectors whose text is replaced with blocks before a screenshot. Taken from
-# the live portal markup on 2026-10-02.
-MASKED = (
-    "a.profile",           # the signed in account holder's name
-    "a.customer-number",   # "AIRCRAFT PARTS DISTRIBUTION IN <number>"
-    "a[href^='mailto:']",  # support email addresses
-    "a[href^='tel:']",     # support phone numbers
-)
+# What is hidden, grouped by what it reveals. Taken from the live portal markup
+# on 2026-10-02.
+#
+# Grouped rather than one flat list so a miss can be named. A single total
+# would still look healthy if the portal renamed one class: the other groups
+# would keep matching, the count would stay above zero, and that one value
+# would quietly appear in every screenshot from then on.
+MASKED = {
+    "account holder": ("a.profile",),
+    "customer number": ("a.customer-number",),
+    "support contacts": ("a[href^='mailto:']", "a[href^='tel:']"),
+}
 
 # Blocks containing a heading match these: the whole block goes, because the
 # contact details inside it are not individually addressable.
@@ -53,19 +57,23 @@ _CSS = """
 # the layout stays recognisable and unmask() can put it all back.
 _APPLY = """
 (args) => {
-  const [selectors, headings, styleId, css] = args;
+  const [groups, headings, styleId, css] = args;
   if (!document.getElementById(styleId)) {
     const style = document.createElement('style');
     style.id = styleId;
     style.textContent = css;
     document.head.appendChild(style);
   }
-  let marked = 0;
-  for (const selector of selectors) {
-    for (const node of document.querySelectorAll(selector)) {
-      node.classList.add('txtav-redacted');
-      marked++;
+  const counts = {};
+  for (const [label, selectors] of groups) {
+    let n = 0;
+    for (const selector of selectors) {
+      for (const node of document.querySelectorAll(selector)) {
+        node.classList.add('txtav-redacted');
+        n++;
+      }
     }
+    counts[label] = n;
   }
   for (const heading of headings) {
     for (const node of document.querySelectorAll('h1,h2,h3,h4')) {
@@ -73,10 +81,13 @@ _APPLY = """
       // The nearest div is a layout wrapper holding only the heading; the
       // contact details live further up, in the module that encloses it.
       const block = node.closest('.module') || node.closest('div') || node.parentElement;
-      if (block) { block.classList.add('txtav-redacted'); marked++; }
+      if (block) {
+        block.classList.add('txtav-redacted');
+        counts['support contacts'] = (counts['support contacts'] || 0) + 1;
+      }
     }
   }
-  return marked;
+  return counts;
 }
 """
 
@@ -90,11 +101,23 @@ _REMOVE = """
 """
 
 
-def mask(page) -> int:
-    """Hide identifying details. Returns how many elements were masked."""
-    return int(
-        page.evaluate(_APPLY, [list(MASKED), list(MASKED_BLOCK_HEADINGS), STYLE_ID, _CSS])
+def mask(page) -> dict[str, int]:
+    """Hide identifying details. Returns how many elements matched per group.
+
+    Callers check `missed()` on the result: a group that matched nothing means
+    the portal's markup changed, and the value that group covers would
+    otherwise appear in the image.
+    """
+    groups = [[label, list(selectors)] for label, selectors in MASKED.items()]
+    counts = page.evaluate(
+        _APPLY, [groups, list(MASKED_BLOCK_HEADINGS), STYLE_ID, _CSS]
     )
+    return {label: int(counts.get(label, 0)) for label in MASKED}
+
+
+def missed(counts: dict[str, int]) -> list[str]:
+    """Groups that matched nothing. Empty means everything expected was hidden."""
+    return [label for label, count in counts.items() if count == 0]
 
 
 def unmask(page) -> None:

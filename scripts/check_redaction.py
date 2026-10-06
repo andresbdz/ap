@@ -46,6 +46,7 @@ def main() -> int:
         page = browser.new_page()
         page.goto(FIXTURE.resolve().as_uri(), wait_until="domcontentloaded")
 
+        failures_early = []
         before = visible(page)
         present = {
             label: pattern
@@ -60,11 +61,16 @@ def main() -> int:
             browser.close()
             return 1
 
-        masked_count = redact_page.mask(page)
+        counts = redact_page.mask(page)
         after = visible(page)
-        print(f"\nmasked {masked_count} elements")
+        print("\nmasked per group:")
+        for label, n in counts.items():
+            print(f"  {n:>3}  {label}")
+        for label in redact_page.missed(counts):
+            print(f"  NOTHING MATCHED for {label}: the markup has changed")
+            failures_early.append(label)
 
-        failures = []
+        failures = list(failures_early)
         for label, pattern in present.items():
             hit = re.search(pattern, after)
             print(f"  {'STILL VISIBLE' if hit else 'hidden':<14} {label}")

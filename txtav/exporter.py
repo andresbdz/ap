@@ -104,10 +104,20 @@ def _cell(value: Decimal | None) -> Decimal | str:
 
 
 def all_rows(
-    conn: sqlite3.Connection, *, include_extras: bool = False
+    conn: sqlite3.Connection,
+    *,
+    include_extras: bool = False,
+    processed_only: bool = False,
 ) -> list[list[object]]:
+    """Every part in input order, or only the ones with a result yet.
+
+    `processed_only` is for sharing a sample or spot checking. The sheet itself
+    always wants the full table, so row N keeps meaning the same part.
+    """
     out: list[list[object]] = []
     for row in conn.execute(SELECT):
+        if processed_only and row["processed_on"] is None:
+            continue
         record: list[object] = [
             row["pn"],
             row["alt_pn"] or "",
@@ -137,11 +147,12 @@ def to_csv(
     path: Path | str,
     *,
     include_extras: bool = False,
+    processed_only: bool = False,
 ) -> ExportReport:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     header = list(COLUMNS) + (list(EXTRA_COLUMNS) if include_extras else [])
-    rows = all_rows(conn, include_extras=include_extras)
+    rows = all_rows(conn, include_extras=include_extras, processed_only=processed_only)
 
     with target.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -158,6 +169,7 @@ def to_xlsx(
     path: Path | str,
     *,
     include_extras: bool = False,
+    processed_only: bool = False,
 ) -> ExportReport:
     """Write a real workbook, so prices arrive as numbers and not as text."""
     from openpyxl import Workbook
@@ -165,7 +177,7 @@ def to_xlsx(
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     header = list(COLUMNS) + (list(EXTRA_COLUMNS) if include_extras else [])
-    rows = all_rows(conn, include_extras=include_extras)
+    rows = all_rows(conn, include_extras=include_extras, processed_only=processed_only)
 
     workbook = Workbook()
     sheet = workbook.active

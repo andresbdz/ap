@@ -93,28 +93,28 @@ class Navigator:
         decision = guard.assess(None, self.page.url, text)
         return decision.verdict is not guard.Verdict.REAUTH
 
-    def screenshot(self, path: Path) -> int:
+    def screenshot(self, path: Path) -> dict[str, int]:
         """Capture the viewport for debugging a failure, with identities hidden.
 
         The account holder's name, the customer number and the support contact
         details are masked in the page before the shutter, so they never reach
-        the image file. Returns how many elements were masked, which is logged:
-        a sudden zero means the portal's markup changed and the next screenshot
-        would otherwise carry the client's details into a ticket.
+        the image file. Returns a count per group, which the caller checks: a
+        group matching nothing means the portal's markup changed and that value
+        would otherwise be carried into a ticket.
 
         Viewport only, never full page, for the same reason.
         """
         path.parent.mkdir(parents=True, exist_ok=True)
-        masked = 0
+        counts: dict[str, int] = {}
         try:
-            masked = redact_page.mask(self.page)
+            counts = redact_page.mask(self.page)
             self.page.screenshot(path=str(path), full_page=False)
         finally:
             try:
                 redact_page.unmask(self.page)
             except Exception:  # noqa: BLE001 - the page may already be gone
                 pass
-        return masked
+        return counts
 
 
 @contextmanager

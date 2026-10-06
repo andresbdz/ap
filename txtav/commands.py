@@ -137,7 +137,12 @@ def cmd_export(args: argparse.Namespace) -> int:
     try:
         target = Path(args.out)
         write = exporter.to_csv if target.suffix.lower() == ".csv" else exporter.to_xlsx
-        report = write(conn, target, include_extras=args.extras)
+        report = write(
+            conn,
+            target,
+            include_extras=args.extras,
+            processed_only=args.processed_only,
+        )
     finally:
         conn.close()
     print(report.summary())
@@ -175,7 +180,12 @@ def register(sub) -> None:
     p_exp = sub.add_parser("export", help="write results in the Output tab layout")
     p_exp.add_argument("--out", default="data/Output.xlsx", help=".xlsx or .csv")
     p_exp.add_argument(
-        "--extras", action="store_true", help="also write Type and Availability"
+        "--extras", action="store_true", help="also write Availability"
+    )
+    p_exp.add_argument(
+        "--processed-only",
+        action="store_true",
+        help="skip parts with no result yet, for sharing a sample",
     )
     p_exp.set_defaults(func=cmd_export)
 

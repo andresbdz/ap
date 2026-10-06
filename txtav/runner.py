@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from txtav import alerts, db, extract, guard, logging_setup
+from txtav import alerts, db, extract, guard, logging_setup, redact_page
 from txtav.config import Settings
 from txtav.navigator import Navigator
 from txtav.pacer import Pacer
@@ -472,15 +472,25 @@ def save_failure_screenshot(
     safe = re.sub(r"[^A-Za-z0-9._-]", "_", pn)
     path = Path(settings.screenshot_dir) / f"{int(time.time())}_{reason}_{safe}.png"
     try:
-        masked = navigator.screenshot(path)
+        counts = navigator.screenshot(path)
     except Exception as exc:  # noqa: BLE001
         log.warning("screenshot_failed", pn=pn, error=f"{type(exc).__name__}: {exc}")
         return None
 
-    if masked == 0:
-        # Nothing matched the redaction selectors. Either the portal's markup
-        # changed or this is not a portal page, and in both cases the image may
-        # carry details it should not.
-        log.warning("screenshot_unmasked", pn=pn, path=str(path))
-    log.info("screenshot_saved", pn=pn, path=str(path), masked=masked)
+    # Checked per group, not on the total. A total above zero proves only that
+    # something was hidden, and would stay healthy looking while one renamed
+    # class leaked the same value into every image from then on.
+    missed = redact_page.missed(counts)
+    if missed:
+        # The warning goes in the filename, not only the log. The runbook sends
+        # an operator to this directory to look at images; nobody opens a JSON
+        # log first, and a file that looks like every other screenshot will be
+        # attached to a ticket without a second thought.
+        flagged = path.with_name(
+            "UNMASKED_" + "_".join(m.replace(" ", "-") for m in missed) + "_" + path.name
+        )
+        path.rename(flagged)
+        path = flagged
+        log.warning("screenshot_not_fully_masked", pn=pn, path=str(path), missed=missed)
+    log.info("screenshot_saved", pn=pn, path=str(path), masked=counts)
     return path

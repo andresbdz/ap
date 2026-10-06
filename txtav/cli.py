@@ -12,7 +12,7 @@ import argparse
 import re
 import sys
 
-from txtav import commands, db, importer, logging_setup
+from txtav import commands, db, importer, logging_setup, sheet_commands
 from txtav.config import load_settings
 
 
@@ -142,6 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.set_defaults(func=cmd_status)
 
     commands.register(sub)
+    sheet_commands.register(sub)
 
     return parser
 

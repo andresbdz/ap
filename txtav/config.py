@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     # Portal
     base_url: str = "https://ww2.txtav.com"
 
+    # Output spreadsheet. A native Google Sheet, not an uploaded .xlsx: the
+    # Sheets API cannot write into an uploaded workbook, and the first copy of
+    # this file was one.
+    sheet_id: str = ""
+    sheet_tab: str = "Output"
+    google_client_secrets: Path = Path("secrets/google-oauth-client.json")
+    google_token: Path = Path("secrets/google-token.json")
+
     # Alerting
     alert_webhook: str = ""
     alert_min_level: str = "warning"

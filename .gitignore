@@ -5,6 +5,8 @@ sessions/
 
 # Secrets
 .env
+secrets/
+*service-account*.json
 
 # Client data and scrape output
 data/
