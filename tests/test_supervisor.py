@@ -16,13 +16,23 @@ from txtav.config import Settings
 
 
 class FakeNavigator:
-    def __init__(self, signed_in: bool = True):
-        self.signed_in = signed_in
+    """Answers the session check from a script: a list of decisions, last one repeats."""
+
+    def __init__(self, signed_in: bool = True, answers: list[guard.Decision] | None = None):
+        self.answers = answers or [
+            guard.OK
+            if signed_in
+            else guard.Decision(guard.Verdict.REAUTH, "session_expired", "redirected to login")
+        ]
         self.checks = 0
 
-    def is_signed_in(self) -> bool:
+    def check_session(self) -> guard.Decision:
+        answer = self.answers[min(self.checks, len(self.answers) - 1)]
         self.checks += 1
-        return self.signed_in
+        return answer
+
+    def is_signed_in(self) -> bool:
+        return self.check_session().verdict is guard.Verdict.OK
 
 
 @pytest.fixture
@@ -102,13 +112,83 @@ class TestStoppingConditions:
         assert report.passes == 1
         assert "halted: captcha" in report.stopped_because
 
-    def test_an_expired_session_stops_and_alerts(self, conn, settings, harness):
+    def test_starting_without_a_session_stops_without_a_halt(self, conn, settings, harness):
+        # Nothing has been asked of the portal yet, so this is someone starting
+        # before signing in, not a logout, and there is nothing to review.
         harness["navigator"] = FakeNavigator(signed_in=False)
         report = supervisor.supervise(conn, settings, sleep=sleeper(harness))
 
-        assert report.stopped_because == "session expired"
+        assert report.stopped_because == "not signed in"
         assert harness["runs"] == []
-        assert harness["alerts"] == ["TXT session expired"]
+        assert db.open_halt(conn) is None
+        assert harness["alerts"] == ["TXT supervisor needs a sign in"]
+
+    def test_a_logout_after_working_is_recorded_as_a_halt(self, conn, settings, harness):
+        # The brief's "forced logout": stop, and log it for manual review. The
+        # run loop already halted on a logout seen mid pass; this makes the
+        # pass boundary agree with it.
+        expired = guard.Decision(guard.Verdict.REAUTH, "session_expired", "redirected to login")
+        harness["navigator"] = FakeNavigator(answers=[guard.OK, expired])
+        report = supervisor.supervise(conn, settings, sleep=sleeper(harness))
+
+        assert report.stopped_because == "session expired"
+        assert report.passes == 1
+        halt = db.open_halt(conn)
+        assert halt is not None and halt["kind"] == "session_expired"
+        assert harness["alerts"][-1] == "TXT session expired"
+
+    def test_a_captcha_on_the_dashboard_halts(self, conn, settings, harness):
+        captcha = guard.Decision(guard.Verdict.HALT, "captcha", "page contains 'captcha'")
+        harness["navigator"] = FakeNavigator(answers=[captcha])
+        report = supervisor.supervise(conn, settings, sleep=sleeper(harness))
+
+        assert report.stopped_because == "halted: captcha"
+        assert harness["runs"] == [], "no part may be looked up after that"
+        assert db.open_halt(conn)["kind"] == "captcha"
+
+    def test_an_unreachable_portal_is_waited_for_not_reported_as_a_logout(
+        self, conn, settings, harness
+    ):
+        # A network drop at a pass boundary used to read as an expired session
+        # and send someone to sign in again for nothing.
+        down = guard.Decision(guard.Verdict.RETRY, "portal_unreachable", "net::ERR_INTERNET_DISCONNECTED")
+        harness["navigator"] = FakeNavigator(answers=[down, down, guard.OK])
+        report = supervisor.supervise(conn, settings, max_passes=1, sleep=sleeper(harness))
+
+        assert report.passes == 1, "it waited, then carried on"
+        assert harness["slept"].count(supervisor.IDLE_SLEEP_SECONDS) == 2
+        assert db.open_halt(conn) is None
+
+    def test_a_portal_that_never_answers_stops_after_a_bounded_wait(
+        self, conn, settings, harness
+    ):
+        down = guard.Decision(guard.Verdict.RETRY, "portal_unreachable", "net::ERR_INTERNET_DISCONNECTED")
+        harness["navigator"] = FakeNavigator(answers=[down])
+        report = supervisor.supervise(conn, settings, sleep=sleeper(harness))
+
+        assert report.stopped_because == "portal unreachable"
+        assert harness["navigator"].checks == supervisor.MAX_UNANSWERED_CHECKS + 1
+        assert harness["alerts"] == ["TXT portal unreachable"]
+        assert db.open_halt(conn) is None
+
+    def test_a_hung_browser_is_replaced_not_halted(self, conn, settings, harness, monkeypatch):
+        opened: list[int] = []
+
+        class Session:
+            def __enter__(self):
+                opened.append(1)
+                return object()
+
+            def __exit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(supervisor, "browser_session", lambda *a, **k: Session())
+        harness["results"] = [supervisor.runner.RunReport(attempted=2, failed=2, browser_suspect=True)]
+        report = supervisor.supervise(conn, settings, max_passes=2, sleep=sleeper(harness))
+
+        assert report.passes == 2
+        assert len(opened) == 2, "a fresh browser after the suspect pass"
+        assert db.open_halt(conn) is None
 
     def test_a_halt_alerts_once_and_does_not_loop(self, conn, settings, harness):
         db.raise_halt(conn, "captcha", "saw a captcha")

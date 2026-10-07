@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from enum import Enum
 
 
@@ -71,7 +73,17 @@ BROWSER_GONE = (
     "browser has been closed",
     "browser has disconnected",
     "browser closed",
+    # Playwright's driver process died under us. Seen in the log on 2026-10-06,
+    # where it matched "connection" below and was retried as a network fault:
+    # every retry fails at once, and eight parts later the tripwire halted the
+    # run as "consecutive_failures", filed as suspected blocking.
+    "connection closed while reading from the driver",
 )
+
+# A browser profile already open in another Chromium. Measured on 2026-10-07:
+# headed Chromium refuses a second launch on the same profile with this wording
+# (headless, in the same test, did not refuse at all).
+PROFILE_IN_USE = ("profile is already in use", "opening in existing browser session")
 
 _WS = re.compile(r"\s+")
 
@@ -145,6 +157,28 @@ def assess_transport(exc: BaseException) -> Decision:
     if any(marker in message for marker in transport) or "Timeout" in name:
         return Decision(Verdict.RETRY, "transport", f"{name}: {exc}")
     return Decision(Verdict.HALT, "unexpected_error", f"{name}: {exc}")
+
+
+def retry_after_seconds(value: str | None, now: datetime | None = None) -> float | None:
+    """Seconds a Retry-After header asks us to wait, or None if absent or unreadable.
+
+    RFC 9110 section 10.2.3 allows either a number of seconds or an HTTP date.
+    """
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    return max(0.0, (when - current).total_seconds())
 
 
 class ConsecutiveFailureTripwire:

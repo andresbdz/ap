@@ -46,11 +46,14 @@ class FakeNavigator:
 
 
 class _Fetch:
-    def __init__(self, pn, html, decision):
+    def __init__(self, pn, html, decision, *, seconds=1.0, retry_after=None):
         self.pn, self.html, self.decision = pn, html, decision
         self.url = self.final_url = f"https://ww2.txtav.com/x/{pn}"
         self.status = 200
         self.text = html
+        self.settled = True
+        self.seconds = seconds
+        self.retry_after = retry_after
 
 
 @pytest.fixture
@@ -183,6 +186,24 @@ class TestStopping:
         assert runner.run(conn, nav, settings).halted.kind == "pricing_revoked"
 
     def test_repeated_failures_trip_the_tripwire(self, conn, settings):
+        # A network fault rather than a timeout: the page is reachable enough
+        # to fail, so this is the tripwire's case, not a hung browser's.
+        pns = ["a", "b", "c", "d"]
+        seed(conn, pns)
+        nav = FakeNavigator(
+            {pn: "" for pn in pns},
+            raises={pn: RuntimeError("net::ERR_CONNECTION_RESET") for pn in pns},
+        )
+        report = runner.run(conn, nav, settings)
+
+        assert report.halted is not None
+        assert report.halted.kind == "consecutive_failures"
+        assert report.failed == 3
+
+    def test_parts_that_only_time_out_end_the_pass_without_a_halt(self, conn, settings):
+        # The shape of a hung browser. Halting would send a person looking for a
+        # block; replacing the browser is the proportionate response, and the
+        # supervisor's tripwire still counts across it.
         pns = ["a", "b", "c", "d"]
         seed(conn, pns)
         nav = FakeNavigator(
@@ -191,9 +212,14 @@ class TestStopping:
         )
         report = runner.run(conn, nav, settings)
 
-        assert report.halted is not None
-        assert report.halted.kind == "consecutive_failures"
-        assert report.failed == 3
+        assert report.halted is None
+        assert report.browser_suspect is True
+        assert report.failed == runner.BROWSER_SUSPECT_AFTER
+        assert db.open_halt(conn) is None
+        # Back in the queue: failed is final for the cycle, and these parts did
+        # nothing wrong.
+        statuses = {r["pn"]: r["status"] for r in conn.execute("SELECT pn, status FROM jobs")}
+        assert statuses == {pn: "pending" for pn in pns}
 
     def test_an_unrecognised_page_halts_rather_than_being_skipped(self, conn, settings):
         seed(conn, ["6622168-22"])

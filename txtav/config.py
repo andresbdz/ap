@@ -40,13 +40,26 @@ class Settings(BaseSettings):
     # Pacing
     request_interval_seconds: float = DEFAULT_INTERVAL_SECONDS
     jitter_seconds: float = 2.0
+    # When recent pages take this many times longer than the portal's own normal,
+    # the interval is stretched by the same ratio, so a struggling portal is
+    # asked for less. It never shortens the interval. 0 turns it off.
+    slowdown_threshold: float = 2.0
+    # However slow the portal gets, the gap does not grow past this. Beyond it
+    # the run is effectively stalled, and the schedule alert says so.
+    max_interval_seconds: float = 60.0
     cycle_days: int = 14
     window_start: time | None = None
     window_end: time | None = None
 
     # Reliability
     max_network_retries: int = 3
+    # Retry waits use exponential backoff with full jitter on top of the pacer:
+    # a random wait between 0 and min(cap, base * 2^attempt).
     backoff_base_seconds: float = 5.0
+    backoff_cap_seconds: float = 60.0
+    # A 503 that names a Retry-After is honoured up to this long. Asked to stay
+    # away for longer, the run stops for a person rather than sitting on it.
+    retry_after_cap_seconds: float = 300.0
     # Consecutive failed parts before the run halts for a human. A string of
     # failures with no single cause is the shape of silent throttling, so this
     # has to be low; but every halt is sticky and costs a person, and at 3 a

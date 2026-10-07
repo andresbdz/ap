@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from txtav import alerts, db, guard, logging_setup, runner
 from txtav.config import Settings
 from txtav.navigator import Navigator, browser_session
-from txtav.pacer import Pacer, in_window
+from txtav.pacer import in_window
 
 log = logging_setup.get_logger("txtav.supervisor")
 
@@ -52,6 +52,17 @@ PASS_PARTS = 200
 # Stated as a precaution, not a fix: no leak has been measured here. It is
 # cheap, and the failure it guards against is a process dying on day nine.
 SESSION_PASSES = 8
+
+# How many times in a row the dashboard may fail to answer, IDLE_SLEEP_SECONDS
+# apart, before the loop gives up and asks for a person. Six is half an hour:
+# long enough to ride out a router restart, short enough not to lose a night.
+MAX_UNANSWERED_CHECKS = 6
+
+# What a segment of passes on one browser ended in.
+STOP = "stop"                # report.stopped_because says why
+IDLE = "idle"                # nothing to do yet; wait with the browser closed
+RECYCLE = "recycle"          # carry on with a fresh browser
+UNREACHABLE = "unreachable"  # the portal or browser did not answer; wait, then retry
 
 
 @dataclass
@@ -123,8 +134,9 @@ def supervise(
     report = SupervisorReport()
     stopper = Stopper()
     stopper.install()
-    pace = Pacer(settings.request_interval_seconds, settings.jitter_seconds)
+    pace = runner.build_pacer(settings)
     tripwire = guard.ConsecutiveFailureTripwire(settings.consecutive_failure_halt)
+    unanswered = 0  # consecutive session checks the portal did not answer
 
     def stop_now() -> str:
         """Why the loop should end, or an empty string to carry on."""
@@ -147,10 +159,43 @@ def supervise(
             return f"halted: {halt['kind']}"
         return ""
 
-    def segment() -> bool:
-        """Up to `session_passes` passes on one browser. True when idle.
+    def signed_out(session: guard.Decision) -> str:
+        """The session check found nobody signed in."""
+        if report.passes == 0:
+            # Nothing has been asked of the portal by this process yet, so this
+            # is someone starting without having signed in, not a logout.
+            report.stopped_because = "not signed in"
+            log.critical("supervisor_not_signed_in")
+            alerts.send(
+                settings.alert_webhook,
+                "TXT supervisor needs a sign in",
+                "No session on start. Run `txtav login`, sign in by hand with "
+                "the 2FA code, then start `txtav supervise` again.",
+            )
+            return STOP
+        # Signed out after working: the brief's "forced logout", to be stopped
+        # and logged for manual review. A halt records it the same way the run
+        # loop already did for a logout seen mid pass, and the list of them is
+        # also how the session's real lifetime will finally get measured.
+        db.raise_halt(conn, "session_expired", session.detail)
+        report.stopped_because = "session expired"
+        log.critical("supervisor_session_expired", detail=session.detail)
+        halt = db.open_halt(conn)
+        alerts.send(
+            settings.alert_webhook,
+            "TXT session expired",
+            "The portal session has lapsed. Run `txtav login` and sign in by "
+            "hand with the 2FA code, check nothing else looks wrong, then "
+            f"`txtav halt-clear --id {halt['id'] if halt else 'N'} --by <name>` "
+            "and start `txtav supervise` again. Nothing is lost; the run "
+            "resumes where it stopped.",
+        )
+        return STOP
 
-        Sets report.stopped_because when the loop has to end.
+    def segment() -> str:
+        """Up to `session_passes` passes on one browser, then say what happened.
+
+        Sets report.stopped_because whenever the answer is STOP.
         """
         with browser_session(settings.profile_dir, settings.page_timeout_seconds) as page:
             navigator = Navigator(page, settings.base_url)
@@ -158,21 +203,33 @@ def supervise(
             for _ in range(max(1, session_passes)):
                 report.stopped_because = stop_now()
                 if report.stopped_because:
-                    return False
+                    return STOP
                 if not in_window(clock(), settings.window_start, settings.window_end):
-                    return False  # the outer loop sleeps, with the browser closed
+                    return RECYCLE  # the outer loop sleeps, with the browser closed
 
-                if not navigator.is_signed_in():
-                    report.stopped_because = "session expired"
-                    log.critical("supervisor_session_expired")
+                session = navigator.check_session()
+                if session.verdict is guard.Verdict.RETRY or session.kind == "browser_gone":
+                    # The portal or the browser did not answer. Not a reason to
+                    # send someone to sign in: wait with the browser closed and
+                    # look again, a bounded number of times.
+                    log.warning("session_check_unanswered", kind=session.kind, detail=session.detail)
+                    return UNREACHABLE
+                if session.verdict is guard.Verdict.REAUTH:
+                    return signed_out(session)
+                if session.should_stop:
+                    # A CAPTCHA or a refusal on the dashboard is the same signal
+                    # it would be on a part page.
+                    db.raise_halt(conn, session.kind, session.detail)
+                    report.stopped_because = f"halted: {session.kind}"
+                    log.critical("supervisor_halted", kind=session.kind, detail=session.detail)
                     alerts.send(
                         settings.alert_webhook,
-                        "TXT session expired",
-                        "The portal session has lapsed. Someone needs to run "
-                        "`txtav login` and sign in by hand, including the 2FA code. "
-                        "Nothing is lost; the run resumes where it stopped.",
+                        f"TXT run halted: {session.kind}",
+                        f"{session.detail}\n\nSeen on the dashboard before any part "
+                        f"was looked up. Nothing further will run until this is "
+                        f"cleared by hand.",
                     )
-                    return False
+                    return STOP
 
                 result = runner.run(
                     conn,
@@ -187,7 +244,11 @@ def supervise(
 
                 if result.halted is not None:
                     report.stopped_because = f"halted: {result.halted.kind}"
-                    return False
+                    return STOP
+                if result.browser_suspect:
+                    # The page stopped answering at all. A fresh browser is the
+                    # proportionate answer; the tripwire persists across it.
+                    return RECYCLE
 
                 if result.attempted == 0:
                     # Either the cycle is complete and the next is not due, or
@@ -195,9 +256,9 @@ def supervise(
                     # nothing to be gained from asking again immediately, and
                     # nothing to be gained from holding the browser while we
                     # wait.
-                    return True
+                    return IDLE
                 sleep(PASS_SLEEP_SECONDS)
-        return False
+        return RECYCLE
 
     while True:
         report.stopped_because = stop_now()
@@ -212,7 +273,7 @@ def supervise(
             continue
 
         try:
-            idle = segment()
+            outcome = segment()
         except Exception as exc:  # noqa: BLE001 - an unattended stop must be heard
             # Before the browser was recycled it was launched once, in front of
             # whoever typed the command, so a failure to start was seen. Now it
@@ -223,6 +284,18 @@ def supervise(
             # written down and sent, and the loop stops: an unexplained fault is
             # not something to retry around.
             detail = f"{type(exc).__name__}: {exc}"
+            advice = (
+                "Check the machine, then start `txtav supervise` again."
+            )
+            if any(marker in detail.lower() for marker in guard.PROFILE_IN_USE):
+                # Measured: headed Chromium refuses a profile another Chromium
+                # holds open. Usually a `txtav login` window left open, or a
+                # browser orphaned by an earlier crash.
+                advice = (
+                    "The browser profile is open in another Chromium window, "
+                    "often a `txtav login` left open or a browser left behind by "
+                    "a crash. Close it, then start `txtav supervise` again."
+                )
             report.stopped_because = f"crashed: {type(exc).__name__}"
             log.critical("supervisor_crashed", error=detail)
             db.log_event(conn, "critical", "supervisor_crashed", detail)
@@ -230,14 +303,31 @@ def supervise(
                 settings.alert_webhook,
                 "TXT supervisor stopped unexpectedly",
                 f"{detail}\n\nNo halt was raised; nothing suggests the portal "
-                f"refused us. Check the machine, then start `txtav supervise` "
-                f"again. The run resumes where it stopped.",
+                f"refused us. {advice} The run resumes where it stopped.",
             )
             break
 
         if report.stopped_because:
             break
-        if idle:
+        if outcome == UNREACHABLE:
+            unanswered += 1
+            if unanswered > MAX_UNANSWERED_CHECKS:
+                report.stopped_because = "portal unreachable"
+                detail = (
+                    f"the dashboard did not answer {unanswered} times in a row, "
+                    f"{IDLE_SLEEP_SECONDS // 60} minutes apart. No halt was raised; "
+                    f"check the machine's connection, then start `txtav supervise` again."
+                )
+                log.critical("supervisor_portal_unreachable", detail=detail)
+                db.log_event(conn, "critical", "portal_unreachable", detail)
+                alerts.send(settings.alert_webhook, "TXT portal unreachable", detail)
+                break
+            log.info("waiting_for_portal", attempt=unanswered, sleeping=IDLE_SLEEP_SECONDS)
+            sleep(IDLE_SLEEP_SECONDS)
+            continue
+
+        unanswered = 0
+        if outcome == IDLE:
             log.info("nothing_to_do", sleeping=IDLE_SLEEP_SECONDS)
             sleep(IDLE_SLEEP_SECONDS)
         else:

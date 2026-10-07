@@ -42,18 +42,33 @@ mailbox, then press Enter in the terminal. It prints `Signed in` or
 
 ## When it has stopped
 
-`summary` and `run` both print the halt. There are four kinds and they are not
+`summary` and `run` both print the halt. There are several kinds and they are not
 equally serious.
 
 ### `session_expired`
 
-The login lapsed. Ordinary, not a warning from the portal.
+The login lapsed after the run had been working. Usually ordinary, but the brief
+counts a forced logout as something to stop and review, so it is recorded as a
+halt wherever it is seen, mid pass or between passes. Before clearing, glance at
+`summary`: a logout straight after a run of failures or retries reads very
+differently from one after a quiet night.
 
 ```bash
 .venv/bin/python -m txtav.cli login            # sign in by hand
 .venv/bin/python -m txtav.cli halt-clear --id N --by "your name"
-.venv/bin/python -m txtav.cli run
+.venv/bin/python -m txtav.cli supervise
 ```
+
+Each of these halts is also a data point on how long a session really lasts,
+which is still not known. `SELECT raised_at FROM halts WHERE kind =
+'session_expired'` lists them.
+
+### `service_unavailable`
+
+The portal answered 503 with a `Retry-After` longer than five minutes. It has
+told us when to come back; a run waits at most five minutes unattended. Clear
+once that time has passed. Shorter `Retry-After` values are waited out
+automatically and do not stop anything.
 
 ### `rate_limited`, `forbidden`, `unauthorized`
 
@@ -164,10 +179,30 @@ the cycle is not due yet, and stops the moment anything says it should. Ctrl-C
 stops it cleanly at the next pass boundary. It never retries past a halt; it is
 a scheduler, not a way around the guard.
 
-It stops by itself, with an alert, for two reasons you have to act on:
+It stops by itself, with an alert, for these reasons, each needing a person:
 
-- **session expired** — run `txtav login`, sign in by hand, start it again
-- **halted** — read the halt first, see above
+- **halted**, including `session_expired`: read the halt first, see above
+- **not signed in**: started without a session. `txtav login`, then start again
+- **portal unreachable**: the dashboard did not answer for half an hour. Check
+  the connection; nothing suggests a block, so there is no halt to clear
+- **crashed**: something outside the portal failed, such as the browser not
+  launching. The alert says what. A profile "already in use" means another
+  Chromium window has `.pw-profile/` open; close it
+
+Some things it handles itself and only logs:
+
+| Log event | Meaning |
+|---|---|
+| `page_retry` (`page_not_settled`) | a page had not finished rendering after 15 s; retried with backoff rather than read half drawn |
+| `page_retry` (`server_error`) | HTTP 5xx; retried after a random backoff, or after the portal's `Retry-After` if it sent one |
+| `browser_suspect` | two parts in a row timed out with no answer at all; the browser is replaced and those parts go back in the queue |
+| `waiting_for_portal` | the dashboard did not answer; waits five minutes with the browser closed, up to six times |
+| `pace_stretched` | recent pages are at least twice as slow as this portal's normal, so the gap between requests has been stretched in proportion, up to 60 s |
+
+Only one txtav process may use the session at a time. A second `supervise`,
+`run`, `dryrun` or `login` refuses to start with "Not started: another txtav
+process holds data/txtav.lock". That is the lock working: two at once would
+double the agreed request rate.
 
 Every 8 passes, roughly five hours, it closes the browser and opens a new one.
 That is deliberate: one Chromium tab is not built to navigate 109,589 pages

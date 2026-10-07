@@ -103,6 +103,7 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 LOGGED_OUT_MARKERS = ("hello, log in", "my account log in register")
 
 
+@commands.holds_portal_lock
 def cmd_login(args: argparse.Namespace) -> int:
     """Open a real browser so a human can sign in, then verify the session.
 

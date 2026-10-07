@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import sqlite3
 from pathlib import Path
 
-from txtav import alerts, db, exporter, navigator, runner, supervisor
+from txtav import alerts, db, exporter, instance_lock, navigator, runner, supervisor
 from txtav.config import load_settings
 
 # Taken from the exporter rather than restated. This was a second copy of the
@@ -14,6 +15,31 @@ from txtav.config import load_settings
 # the sample workbook, without Type or Date Processed, so `txtav results`
 # printed a layout the sheet no longer has.
 OUTPUT_COLUMNS = exporter.COLUMNS
+
+
+def holds_portal_lock(command):
+    """Run a command only while holding the one-process-at-a-time lock.
+
+    For every command that opens the portal session: login, run, dryrun and
+    supervise. The lock lives next to the database, so it covers exactly the
+    processes that would share a job store and a browser profile.
+    """
+
+    @functools.wraps(command)
+    def guarded(args: argparse.Namespace) -> int:
+        settings = load_settings()
+        lock = instance_lock.InstanceLock(Path(settings.db_path).with_suffix(".lock"))
+        try:
+            lock.acquire()
+        except instance_lock.AlreadyRunning as exc:
+            print(f"Not started: {exc}\nStop the other one first, or wait for it to finish.")
+            return 1
+        try:
+            return command(args)
+        finally:
+            lock.release()
+
+    return guarded
 
 
 def _refuse_empty_store(settings) -> bool:
@@ -92,10 +118,12 @@ def _run(args: argparse.Namespace, *, dry_run: bool) -> int:
     return 2 if report.halted is not None else 0
 
 
+@holds_portal_lock
 def cmd_run(args: argparse.Namespace) -> int:
     return _run(args, dry_run=False)
 
 
+@holds_portal_lock
 def cmd_dryrun(args: argparse.Namespace) -> int:
     return _run(args, dry_run=True)
 
@@ -225,6 +253,7 @@ def cmd_cycle_restart(args: argparse.Namespace) -> int:
     return 0
 
 
+@holds_portal_lock
 def cmd_supervise(args: argparse.Namespace) -> int:
     """Run continuously: keep the cycle moving until stopped or halted."""
     settings = load_settings()
@@ -254,7 +283,14 @@ def cmd_supervise(args: argparse.Namespace) -> int:
     print(report.summary())
     # Non zero for every stop that needs a person, so a wrapper script or a
     # scheduled restart can tell "finished" from "come and look".
-    needs_a_person = ("halted", "crashed", "session expired")
+    needs_a_person = (
+        "halted",
+        "crashed",
+        "session expired",
+        "not signed in",
+        "portal unreachable",
+        "already running",
+    )
     return 2 if report.stopped_because.startswith(needs_a_person) else 0
 
 

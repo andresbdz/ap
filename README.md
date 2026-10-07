@@ -21,6 +21,24 @@ parts that cannot be made up within the cycle.
 `TXTAV_REQUEST_INTERVAL_SECONDS` controls the pace and is refused below 2.0
 seconds, so a typo in `.env` cannot turn this into a hammer.
 
+**11 seconds is what the client's deadline needs, not a rate the portal has
+approved.** Nothing the portal publishes states a limit. As of 2026-10-07
+`ww2.txtav.com/robots.txt` returns 404 (on 2026-10-01 it disallowed
+`/Parts/PartSearch/PartsDetail?PartNumbers=`, a form this code never uses), and
+`www.txtav.com/robots.txt` lists only sitemaps, with no crawl delay. No public
+API, export or terms of use covering automated access turned up. Whether TXT
+permits this is a question for the client and their TXT account contact.
+
+So the interval is treated as a ceiling on how hard we ask, never a floor on how
+fast we may go. It stretches, and only stretches, when the portal slows down:
+when the median page time of the last nine pages reaches twice this portal's own
+normal, the gap grows in proportion, up to 60 seconds. Every part's page time is
+logged (`page_s`) so the pace can be argued from measurements. Measured in the
+pilot, 1,192 parts: gap mean 11.03 s, p90 12.73 s, p99 18.28 s, max 34.6 s.
+
+A stretched pace means the 14 day cycle runs late, and the schedule check says
+so. That trade is deliberate: a struggling portal comes before the deadline.
+
 ## Operating rules
 
 These are design constraints, not preferences.
