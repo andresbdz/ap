@@ -45,8 +45,13 @@ Operational procedures are in [RUNBOOK.md](RUNBOOK.md).
 ```bash
 uv venv --python 3.12 .venv
 uv pip install -e ".[dev]"      # `-e .` alone on a server; dev adds only pytest
+.venv/bin/python -m playwright install chromium   # pip does not fetch the browser
 cp .env.example .env
+.venv/bin/python -m txtav.cli preflight            # says what is still missing
 ```
+
+On Windows the interpreter is `.venv\Scripts\python.exe` wherever these docs
+say `.venv/bin/python`.
 
 Put the client's workbook at `data/PN_List_full.xlsx`, or point
 `TXTAV_PARTS_XLSX` elsewhere.

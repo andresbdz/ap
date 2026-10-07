@@ -147,28 +147,20 @@ def supervise(
             return f"halted: {halt['kind']}"
         return ""
 
-    while True:
-        report.stopped_because = stop_now()
-        if report.stopped_because:
-            break
+    def segment() -> bool:
+        """Up to `session_passes` passes on one browser. True when idle.
 
-        if not in_window(clock(), settings.window_start, settings.window_end):
-            # Checked before the browser is opened, so an overnight window does
-            # not leave an idle browser holding a session open all day.
-            log.info("outside_operating_window", sleeping=IDLE_SLEEP_SECONDS)
-            sleep(IDLE_SLEEP_SECONDS)
-            continue
-
-        idle = False
+        Sets report.stopped_because when the loop has to end.
+        """
         with browser_session(settings.profile_dir, settings.page_timeout_seconds) as page:
             navigator = Navigator(page, settings.base_url)
 
             for _ in range(max(1, session_passes)):
                 report.stopped_because = stop_now()
                 if report.stopped_because:
-                    break
+                    return False
                 if not in_window(clock(), settings.window_start, settings.window_end):
-                    break  # the outer loop sleeps, with the browser closed
+                    return False  # the outer loop sleeps, with the browser closed
 
                 if not navigator.is_signed_in():
                     report.stopped_because = "session expired"
@@ -180,7 +172,7 @@ def supervise(
                         "`txtav login` and sign in by hand, including the 2FA code. "
                         "Nothing is lost; the run resumes where it stopped.",
                     )
-                    break
+                    return False
 
                 result = runner.run(
                     conn,
@@ -195,7 +187,7 @@ def supervise(
 
                 if result.halted is not None:
                     report.stopped_because = f"halted: {result.halted.kind}"
-                    break
+                    return False
 
                 if result.attempted == 0:
                     # Either the cycle is complete and the next is not due, or
@@ -203,9 +195,45 @@ def supervise(
                     # nothing to be gained from asking again immediately, and
                     # nothing to be gained from holding the browser while we
                     # wait.
-                    idle = True
-                    break
+                    return True
                 sleep(PASS_SLEEP_SECONDS)
+        return False
+
+    while True:
+        report.stopped_because = stop_now()
+        if report.stopped_because:
+            break
+
+        if not in_window(clock(), settings.window_start, settings.window_end):
+            # Checked before the browser is opened, so an overnight window does
+            # not leave an idle browser holding a session open all day.
+            log.info("outside_operating_window", sleeping=IDLE_SLEEP_SECONDS)
+            sleep(IDLE_SLEEP_SECONDS)
+            continue
+
+        try:
+            idle = segment()
+        except Exception as exc:  # noqa: BLE001 - an unattended stop must be heard
+            # Before the browser was recycled it was launched once, in front of
+            # whoever typed the command, so a failure to start was seen. Now it
+            # relaunches every few hours with nobody watching, and a launch that
+            # fails (a Playwright update, a full disk, a profile left locked)
+            # would end the process with a traceback in a terminal nobody is
+            # looking at. Anything escaping a segment is caught here instead,
+            # written down and sent, and the loop stops: an unexplained fault is
+            # not something to retry around.
+            detail = f"{type(exc).__name__}: {exc}"
+            report.stopped_because = f"crashed: {type(exc).__name__}"
+            log.critical("supervisor_crashed", error=detail)
+            db.log_event(conn, "critical", "supervisor_crashed", detail)
+            alerts.send(
+                settings.alert_webhook,
+                "TXT supervisor stopped unexpectedly",
+                f"{detail}\n\nNo halt was raised; nothing suggests the portal "
+                f"refused us. Check the machine, then start `txtav supervise` "
+                f"again. The run resumes where it stopped.",
+            )
+            break
 
         if report.stopped_because:
             break

@@ -42,11 +42,24 @@ class SheetError(RuntimeError):
     pass
 
 
-def authorise(client_secrets: Path, token_path: Path, *, open_browser: bool = True):
+def authorise(
+    client_secrets: Path,
+    token_path: Path,
+    *,
+    open_browser: bool = True,
+    interactive: bool = True,
+):
     """Return credentials, running the consent flow once if needed.
 
     The refresh token is written to `token_path` and reused from then on. A
     human only sees a browser the first time, or if the token is revoked.
+
+    `interactive=False` is for anything unattended. The consent flow starts a
+    local web server and waits for a browser to call it back, and the library's
+    default is to wait with no timeout at all. Reached from inside a run, a
+    missing or revoked token would stop the whole cycle on that wait, silently,
+    with the portal browser sitting open and nothing alerted. Forgetting to copy
+    the token file to a new machine is enough to get there.
     """
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
@@ -66,6 +79,12 @@ def authorise(client_secrets: Path, token_path: Path, *, open_browser: bool = Tr
             return creds
         except Exception as exc:  # noqa: BLE001
             log.warning("token_refresh_failed", error=f"{type(exc).__name__}: {exc}")
+
+    if not interactive:
+        raise SheetError(
+            f"no usable Google token at {token_path}, and this caller cannot wait "
+            f"for a person to grant one. Run `txtav sheet-auth` by hand."
+        )
 
     if not client_secrets.exists():
         raise SheetError(

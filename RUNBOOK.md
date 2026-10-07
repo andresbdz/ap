@@ -185,6 +185,32 @@ Whatever machine is used, **the login must happen on that same machine**: the
 session belongs to the browser profile in `.pw-profile/`, and moving it changes
 both the IP and the browser environment mid-session.
 
+### Moving to another machine
+
+Copy across, by remote desktop file transfer and never by email or chat:
+
+| Copy | Why |
+|---|---|
+| `data/txtav.db` | every result so far, and the place in the cycle |
+| `.env` | settings, including the sheet id |
+| `secrets/` | the Google token; without it results never reach the sheet |
+
+**Do not copy `.pw-profile/`.** It is tied to one Chromium build, and the
+portal session is signed in again by hand on the new machine regardless.
+
+Then, from the project directory on the new machine:
+
+```bash
+.venv/bin/python -m txtav.cli preflight            # fix every FAIL
+.venv/bin/python -m txtav.cli cycle-restart        # if preflight says the cycle is behind
+.venv/bin/python -m txtav.cli login                # by hand, with the 2FA code
+.venv/bin/python -m txtav.cli supervise
+```
+
+The machine must not sleep, must stay plugged in, and must not reboot itself
+for updates during a cycle. Remote access has to be unattended, or every
+expired session waits for someone at that keyboard to accept a connection.
+
 ---
 
 ## Things never to do

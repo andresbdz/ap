@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 from pathlib import Path
 
 from txtav import alerts, db, exporter, navigator, runner, supervisor
@@ -15,8 +16,41 @@ from txtav.config import load_settings
 OUTPUT_COLUMNS = exporter.COLUMNS
 
 
+def _refuse_empty_store(settings) -> bool:
+    """True, after explaining, when there is nothing loaded to look up.
+
+    Every path in the settings is relative to where the command is started.
+    From the wrong directory, connect() creates a fresh empty database, a cycle
+    of nothing opens and finishes at once, and a supervisor then idles for two
+    weeks while reporting nothing wrong. On a machine reached by remote desktop,
+    a terminal opened in the home directory is the likely way to get there.
+
+    Checked read only and before connecting, so the check does not itself leave
+    an empty database behind in the wrong place.
+    """
+    path = Path(settings.db_path)
+    if path.exists():
+        probe = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            loaded = probe.execute("SELECT COUNT(*) FROM parts").fetchone()[0]
+        except sqlite3.DatabaseError:
+            loaded = 0
+        finally:
+            probe.close()
+        if loaded:
+            return False
+    print(
+        f"No parts loaded in {Path(settings.db_path).resolve()}.\n"
+        f"Either this is not the project directory (it is {Path.cwd()}),\n"
+        f"or the list has not been imported: `txtav import`."
+    )
+    return True
+
+
 def _run(args: argparse.Namespace, *, dry_run: bool) -> int:
     settings = load_settings()
+    if _refuse_empty_store(settings):
+        return 1
     conn = db.connect(settings.db_path)
     try:
         halt = db.open_halt(conn)
@@ -159,9 +193,43 @@ def cmd_summary(args: argparse.Namespace) -> int:
     return 2 if report.halt_kind else 0
 
 
+def cmd_cycle_restart(args: argparse.Namespace) -> int:
+    """Move the running cycle's window to start now. Results are kept."""
+    settings = load_settings()
+    conn = db.connect(settings.db_path)
+    try:
+        row = conn.execute(
+            "SELECT id, started_at, ends_at FROM cycles WHERE status = 'running'"
+            " ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            print("No running cycle. The next `run` or `supervise` opens one.")
+            return 0
+        progress = runner.cycle_progress(conn, int(row["id"]))
+        print(f"cycle {row['id']}: {row['started_at']} to {row['ends_at']} (UTC)")
+        if progress is not None:
+            print(f"  {progress.describe()}")
+        if not args.yes:
+            print(
+                f"\nWould restart its window: from now, for {settings.cycle_days} days.\n"
+                f"Every result already captured is kept and nothing is looked up again.\n"
+                f"Run again with --yes to do it."
+            )
+            return 1
+        started, ends = runner.restart_cycle_window(
+            conn, int(row["id"]), settings.cycle_days
+        )
+        print(f"\nRestarted: cycle {row['id']} now runs {started} to {ends} (UTC).")
+    finally:
+        conn.close()
+    return 0
+
+
 def cmd_supervise(args: argparse.Namespace) -> int:
     """Run continuously: keep the cycle moving until stopped or halted."""
     settings = load_settings()
+    if _refuse_empty_store(settings):
+        return 1
     conn = db.connect(settings.db_path)
     try:
         halt = db.open_halt(conn)
@@ -184,7 +252,10 @@ def cmd_supervise(args: argparse.Namespace) -> int:
     finally:
         conn.close()
     print(report.summary())
-    return 2 if report.stopped_because.startswith("halted") else 0
+    # Non zero for every stop that needs a person, so a wrapper script or a
+    # scheduled restart can tell "finished" from "come and look".
+    needs_a_person = ("halted", "crashed", "session expired")
+    return 2 if report.stopped_because.startswith(needs_a_person) else 0
 
 
 def register(sub) -> None:
@@ -238,6 +309,13 @@ def register(sub) -> None:
         "how long one Chromium tab has to stay healthy",
     )
     p_sup.set_defaults(func=cmd_supervise)
+
+    p_cyc = sub.add_parser(
+        "cycle-restart",
+        help="start the running cycle's window now, keeping its results",
+    )
+    p_cyc.add_argument("--yes", action="store_true", help="actually do it")
+    p_cyc.set_defaults(func=cmd_cycle_restart)
 
     p_res = sub.add_parser("results", help="print captured rows")
     p_res.add_argument("--limit", type=int, default=20)

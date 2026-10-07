@@ -115,6 +115,38 @@ def start_cycle(conn: sqlite3.Connection, cycle_days: int) -> int:
     return cycle_id
 
 
+def restart_cycle_window(
+    conn: sqlite3.Connection, cycle_id: int, cycle_days: int
+) -> tuple[str, str]:
+    """Start a running cycle's window now, keeping every result it already has.
+
+    For when the cycle was opened long before the run that will actually carry
+    it: cycle 1 was opened by the pilot on 2026-10-02, and moved as is to the
+    machine that runs it for real it would begin days late, report itself
+    tens of thousands of parts behind on every pass, and could not finish by its
+    own end date however well it ran. Nothing already looked up is redone; only
+    the dates move. Returns the new (started_at, ends_at).
+    """
+    with db.transaction(conn):
+        cursor = conn.execute(
+            "UPDATE cycles SET started_at = datetime('now'),"
+            " ends_at = datetime('now', ?) WHERE id = ? AND status = 'running'",
+            (f"+{cycle_days} days", cycle_id),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError(f"cycle {cycle_id} is not running")
+        row = conn.execute(
+            "SELECT started_at, ends_at FROM cycles WHERE id = ?", (cycle_id,)
+        ).fetchone()
+        db.log_event(
+            conn,
+            "warning",
+            "cycle_window_restarted",
+            f"cycle {cycle_id} now runs {row['started_at']} to {row['ends_at']}",
+        )
+    return row["started_at"], row["ends_at"]
+
+
 def finish_cycle_if_complete(conn: sqlite3.Connection, cycle_id: int) -> bool:
     """Close a cycle once nothing is left to look up. Returns True if closed."""
     remaining = conn.execute(
@@ -316,6 +348,8 @@ def run(
         db.log_event(conn, "warning", "behind_schedule", progress.describe())
 
     live = None if dry_run else live_sheet.build(settings)
+    if live is None and settings.sheet_id and not dry_run:
+        _report_sheet_unavailable(conn, settings)
     if pace is None:
         pace = Pacer(settings.request_interval_seconds, settings.jitter_seconds)
     if tripwire is None:
@@ -443,6 +477,35 @@ def _notify(conn: sqlite3.Connection, settings: Settings, report: RunReport) -> 
         )
         db.log_event(conn, "warning", "suspiciously_empty_run", detail)
         alerts.send(settings.alert_webhook, "TXT run returned little data", detail)
+
+
+# A sheet that is configured but unreachable is raised at most this often. The
+# run continues regardless, since the database is complete, but a pass starts
+# every 40 minutes or so and one alert per pass would bury everything else.
+SHEET_ALERT_EVERY_HOURS = 6
+
+
+def _report_sheet_unavailable(conn: sqlite3.Connection, settings: Settings) -> None:
+    """Say, loudly but not repeatedly, that results are not reaching the sheet.
+
+    The run carries on: results land in the database either way and a
+    `sheet-push` catches the sheet up. What must not happen is a fortnight of
+    work landing nowhere the client looks while every log line reads healthy.
+    """
+    recent = conn.execute(
+        "SELECT 1 FROM events WHERE kind = 'sheet_unavailable'"
+        " AND ts > datetime('now', ?)",
+        (f"-{SHEET_ALERT_EVERY_HOURS} hours",),
+    ).fetchone()
+    if recent is not None:
+        return
+    detail = (
+        "results are being saved but not written to the Google Sheet: the "
+        "Google token is missing, revoked, or cannot be refreshed. Run "
+        "`txtav sheet-auth` by hand, then `txtav sheet-push` to catch up."
+    )
+    db.log_event(conn, "warning", "sheet_unavailable", detail)
+    alerts.send(settings.alert_webhook, "TXT results are not reaching the sheet", detail)
 
 
 def _save_page(directory: Path, pn: str, html: str) -> None:

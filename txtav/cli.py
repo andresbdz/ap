@@ -79,6 +79,27 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_preflight(args: argparse.Namespace) -> int:
+    """Is this machine ready to be left alone with a fourteen day run?"""
+    from txtav import preflight
+
+    checks = preflight.run_all(load_settings())
+    for check in checks:
+        print(check.line())
+
+    failed = [c for c in checks if c.status == preflight.FAIL]
+    warned = [c for c in checks if c.status == preflight.WARN]
+    print()
+    if failed:
+        print(f"NOT READY: {len(failed)} failed, {len(warned)} warning(s).")
+        return 1
+    if warned:
+        print(f"Ready, with {len(warned)} warning(s) worth reading above.")
+        return 0
+    print("Ready. Next: `txtav login` on this machine, then `txtav supervise`.")
+    return 0
+
+
 LOGGED_OUT_MARKERS = ("hello, log in", "my account log in register")
 
 
@@ -147,6 +168,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_status = sub.add_parser("status", help="report on the job store")
     p_status.set_defaults(func=cmd_status)
+
+    p_pre = sub.add_parser(
+        "preflight", help="check this machine is ready to run unattended"
+    )
+    p_pre.set_defaults(func=cmd_preflight)
 
     commands.register(sub)
     sheet_commands.register(sub)

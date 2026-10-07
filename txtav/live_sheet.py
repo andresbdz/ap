@@ -130,7 +130,10 @@ def build(settings) -> LiveSheet | None:
         return None
     try:
         creds = sheets.authorise(
-            settings.google_client_secrets, settings.google_token, open_browser=False
+            settings.google_client_secrets,
+            settings.google_token,
+            open_browser=False,
+            interactive=False,
         )
         service = sheets.build_service(creds)
     except Exception as exc:  # noqa: BLE001
