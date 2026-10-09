@@ -38,6 +38,8 @@ class RunReport:
     # The pass ended early because the browser stopped answering. Not a halt;
     # the supervisor replaces the browser and continues.
     browser_suspect: bool = False
+    # The pass ended early because this machine lost its network.
+    offline: bool = False
     started_at: float = field(default_factory=time.time)
 
     @property
@@ -455,6 +457,14 @@ def run(
             log.critical("halted", kind=decision.kind, detail=decision.detail, pn=pn)
             break
 
+        if attempt.offline:
+            # Back in the queue and out of the pass. Not a failure, so the
+            # tripwire does not count it; the supervisor waits for the network
+            # with the browser closed and carries on when it returns.
+            _finish(conn, cycle_id, pn, db.STATUS_PENDING, "machine was offline")
+            report.offline = True
+            break
+
         if record is None:
             _finish(conn, cycle_id, pn, outcome(db.STATUS_FAILED), error)
             report.failed += 1
@@ -574,6 +584,13 @@ def _notify(conn: sqlite3.Connection, settings: Settings, report: RunReport) -> 
         )
         return
 
+    if report.offline:
+        # Cut short because this machine lost its network: a near empty pass
+        # is the expected result, and the alert could not leave anyway. A hung
+        # browser is not excused the same way, since a standalone `txtav run`
+        # has no supervisor to replace the browser and this alert is the signal.
+        return
+
     usable = report.success + report.not_found
     if alerts.looks_empty(report.attempted, usable):
         detail = (
@@ -633,6 +650,9 @@ class Attempt:
     # that in a row is the shape of a hung browser rather than a refusing
     # portal, and is answered by replacing the browser.
     timed_out: bool = False
+    # This machine lost its network. The part is not at fault and must not be
+    # marked failed, and the attempt says nothing about the portal either.
+    offline: bool = False
 
 
 def _backoff(settings: Settings, attempt: int) -> float:
@@ -685,6 +705,11 @@ def _attempt(
             decision = guard.assess_transport(exc)
             if decision.verdict is not guard.Verdict.RETRY:
                 return Attempt(decision=decision, error=decision.detail)
+            if decision.kind == "offline":
+                # No retry can succeed until the connection is back, and each
+                # one would only burn the part's attempts.
+                log.warning("offline", pn=pn, detail=decision.detail)
+                return Attempt(error=decision.detail, offline=True)
             last_error = decision.detail
             only_timeouts = only_timeouts and "timeout" in decision.detail.lower()
             log.warning("transport_retry", pn=pn, attempt=attempt, detail=decision.detail)

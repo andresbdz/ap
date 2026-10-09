@@ -80,6 +80,20 @@ BROWSER_GONE = (
     "connection closed while reading from the driver",
 )
 
+# Chromium saying this machine has no network, as opposed to the portal turning
+# a connection away. Strings captured from a real Chromium on 2026-10-09
+# (ERR_INTERNET_DISCONNECTED with the context set offline, ERR_NAME_NOT_RESOLVED
+# for a host that does not resolve). A reset or refused connection is not here
+# on purpose: a firewall dropping us looks exactly like that, so those stay with
+# the tripwire, which assumes the worst.
+OFFLINE = (
+    "net::err_internet_disconnected",
+    "net::err_name_not_resolved",
+    "net::err_network_changed",
+    "net::err_network_io_suspended",
+    "net::err_address_unreachable",
+)
+
 # A browser profile already open in another Chromium. Measured on 2026-10-07:
 # headed Chromium refuses a second launch on the same profile with this wording
 # (headless, in the same test, did not refuse at all).
@@ -144,6 +158,12 @@ def assess_transport(exc: BaseException) -> Decision:
             f"suggests we were blocked; check the machine stayed up, then clear "
             f"this halt and start again. The run resumes where it stopped.",
         )
+
+    # Our own connection is down: a router restart, a power cut at the modem,
+    # the laptop waking from sleep. Not evidence of anything at the portal, and
+    # not worth spending retries on, since none can succeed until it is back.
+    if any(marker in message for marker in OFFLINE):
+        return Decision(Verdict.RETRY, "offline", f"this machine has no network ({name}: {exc})")
 
     transport = (
         "timeout",

@@ -289,6 +289,7 @@ def cmd_supervise(args: argparse.Namespace) -> int:
         "session expired",
         "not signed in",
         "portal unreachable",
+        "offline too long",
         "already running",
     )
     return 2 if report.stopped_because.startswith(needs_a_person) else 0

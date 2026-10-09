@@ -183,6 +183,7 @@ It stops by itself, with an alert, for these reasons, each needing a person:
 
 - **halted**, including `session_expired`: read the halt first, see above
 - **not signed in**: started without a session. `txtav login`, then start again
+- **offline too long**: no network for 12 hours. Start it again once it is back
 - **portal unreachable**: the dashboard did not answer for half an hour. Check
   the connection; nothing suggests a block, so there is no halt to clear
 - **crashed**: something outside the portal failed, such as the browser not
@@ -197,6 +198,16 @@ Some things it handles itself and only logs:
 | `page_retry` (`server_error`) | HTTP 5xx; retried after a random backoff, or after the portal's `Retry-After` if it sent one |
 | `browser_suspect` | two parts in a row timed out with no answer at all; the browser is replaced and those parts go back in the queue |
 | `waiting_for_portal` | the dashboard did not answer; waits five minutes with the browser closed, up to six times |
+| `offline` / `waiting_for_network` | this machine lost its network (Chromium says so outright: `ERR_INTERNET_DISCONNECTED`, `ERR_NAME_NOT_RESOLVED`). The part goes back in the queue, nothing is marked failed, the browser closes, and it checks every five minutes for up to 12 hours |
+| `network_restored` | the network is back and the run carried on by itself; also posted to Slack, since no alert could leave during the outage |
+
+A power cut at the router is therefore survivable without anyone, as long as
+the laptop itself stays on: it runs on battery and picks up when the network
+returns. A power cut that outlasts the battery is not: the machine sleeps or
+shuts down, nothing can post an alert, and someone has to start `supervise`
+again afterwards. Nothing is lost either way; every finished part is already
+saved. A reset or refused connection is deliberately not treated as an outage,
+because a firewall turning us away looks exactly like that.
 | `pace_stretched` | recent pages are at least twice as slow as this portal's normal, so the gap between requests has been stretched in proportion, up to 60 s |
 
 Only one txtav process may use the session at a time. A second `supervise`,

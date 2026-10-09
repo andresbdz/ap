@@ -63,6 +63,10 @@ STOP = "stop"                # report.stopped_because says why
 IDLE = "idle"                # nothing to do yet; wait with the browser closed
 RECYCLE = "recycle"          # carry on with a fresh browser
 UNREACHABLE = "unreachable"  # the portal or browser did not answer; wait, then retry
+OFFLINE = "offline"          # this machine has no network; wait for it, longer
+
+# How long to keep waiting for this machine's own network before giving up.
+MAX_OFFLINE_HOURS = 12
 
 
 @dataclass
@@ -137,6 +141,7 @@ def supervise(
     pace = runner.build_pacer(settings)
     tripwire = guard.ConsecutiveFailureTripwire(settings.consecutive_failure_halt)
     unanswered = 0  # consecutive session checks the portal did not answer
+    offline_since: float | None = None  # when this machine lost its network
 
     def stop_now() -> str:
         """Why the loop should end, or an empty string to carry on."""
@@ -158,6 +163,26 @@ def supervise(
             )
             return f"halted: {halt['kind']}"
         return ""
+
+    def network_back() -> None:
+        """Announce the end of an outage the first time the portal answers again.
+
+        Here rather than at the end of a segment, which can be hours later. The
+        alert about the outage could not be sent while it lasted, so this one is
+        the only word anyone gets of it.
+        """
+        nonlocal offline_since
+        if offline_since is None:
+            return
+        minutes = (time.time() - offline_since) / 60
+        offline_since = None
+        detail = (
+            f"this machine had no network for about {minutes:.0f} minutes. The "
+            f"parts in flight went back in the queue and the run carried on by itself."
+        )
+        log.warning("network_restored", minutes=round(minutes))
+        db.log_event(conn, "warning", "network_restored", detail)
+        alerts.send(settings.alert_webhook, "TXT run resumed after a network outage", detail)
 
     def signed_out(session: guard.Decision) -> str:
         """The session check found nobody signed in."""
@@ -208,6 +233,9 @@ def supervise(
                     return RECYCLE  # the outer loop sleeps, with the browser closed
 
                 session = navigator.check_session()
+                if session.kind == "offline":
+                    log.warning("offline_at_session_check", detail=session.detail)
+                    return OFFLINE
                 if session.verdict is guard.Verdict.RETRY or session.kind == "browser_gone":
                     # The portal or the browser did not answer. Not a reason to
                     # send someone to sign in: wait with the browser closed and
@@ -216,6 +244,8 @@ def supervise(
                     return UNREACHABLE
                 if session.verdict is guard.Verdict.REAUTH:
                     return signed_out(session)
+                if session.verdict is guard.Verdict.OK:
+                    network_back()
                 if session.should_stop:
                     # A CAPTCHA or a refusal on the dashboard is the same signal
                     # it would be on a part page.
@@ -245,6 +275,8 @@ def supervise(
                 if result.halted is not None:
                     report.stopped_because = f"halted: {result.halted.kind}"
                     return STOP
+                if result.offline:
+                    return OFFLINE
                 if result.browser_suspect:
                     # The page stopped answering at all. A fresh browser is the
                     # proportionate answer; the tripwire persists across it.
@@ -309,6 +341,27 @@ def supervise(
 
         if report.stopped_because:
             break
+        if outcome == OFFLINE:
+            # Waited out far longer than an unanswered portal, because this is
+            # unambiguous: the machine itself has no network, nothing about the
+            # portal is in question, and no alert can leave until it is back.
+            # Twelve hours covers a power cut at the router overnight.
+            if offline_since is None:
+                offline_since = time.time()
+                log.warning("waiting_for_network", sleeping=IDLE_SLEEP_SECONDS)
+            hours = (time.time() - offline_since) / 3600
+            if hours >= MAX_OFFLINE_HOURS:
+                report.stopped_because = "offline too long"
+                detail = (
+                    f"this machine has had no network for {hours:.1f} hours. "
+                    f"Start `txtav supervise` again once it is back."
+                )
+                log.critical("supervisor_offline_too_long", detail=detail)
+                db.log_event(conn, "critical", "offline_too_long", detail)
+                break
+            sleep(IDLE_SLEEP_SECONDS)
+            continue
+
         if outcome == UNREACHABLE:
             unanswered += 1
             if unanswered > MAX_UNANSWERED_CHECKS:

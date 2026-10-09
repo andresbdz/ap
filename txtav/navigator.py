@@ -149,7 +149,7 @@ class Navigator:
                 "session_check_failed", error=detail
             )
             transport = guard.assess_transport(exc)
-            if transport.kind == "browser_gone":
+            if transport.kind in ("browser_gone", "offline"):
                 return transport
             return guard.Decision(guard.Verdict.RETRY, "portal_unreachable", detail)
         status = response.status if response is not None else None
