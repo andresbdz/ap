@@ -33,6 +33,33 @@ log = logging_setup.get_logger("txtav.live_sheet")
 # only a full `sheet-push` will put those rows right.
 MAX_CARRIED_FLUSHES = 5
 
+# Where an unwritten span and its failure count are kept between passes and
+# across restarts, as "first:last:consecutive_failures" in the meta table.
+UNWRITTEN_KEY = "sheet_unwritten"
+
+
+def load_unwritten(conn: sqlite3.Connection) -> tuple[tuple[int, int] | None, int]:
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (UNWRITTEN_KEY,)).fetchone()
+    if row is None:
+        return None, 0
+    try:
+        first, last, failures = (int(part) for part in row["value"].split(":"))
+    except ValueError:
+        return None, 0
+    return (first, last), failures
+
+
+def save_unwritten(
+    conn: sqlite3.Connection, span: tuple[int, int] | None, failures: int
+) -> None:
+    if span is None:
+        conn.execute("DELETE FROM meta WHERE key = ?", (UNWRITTEN_KEY,))
+    else:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            (UNWRITTEN_KEY, f"{span[0]}:{span[1]}:{failures}"),
+        )
+
 
 class LiveSheet:
     """Flushes finished rows to the sheet in contiguous blocks."""
@@ -46,6 +73,7 @@ class LiveSheet:
         # The span a previous flush failed to write. Carried forward so the next
         # one covers it too, rather than leaving a hole nothing returns to.
         self._unwritten: tuple[int, int] | None = None
+        self._restored = False
         self.flushes = 0
         self.failures = 0
         self.consecutive_failures = 0
@@ -74,8 +102,30 @@ class LiveSheet:
             )
         return span
 
+    def _restore(self, conn: sqlite3.Connection) -> None:
+        """Pick up a span an earlier LiveSheet failed to write, once.
+
+        A LiveSheet lives for one pass, and the process for a few hours at most,
+        so a span kept only in memory was dropped at the end of every pass. That
+        is exactly where it mattered: on 2026-10-09 the end of pass flush timed
+        out at Google, and rows 1402 to 1601 were left behind until a manual push.
+        """
+        if self._restored:
+            return
+        self._restored = True
+        saved, failures = load_unwritten(conn)
+        if saved is None:
+            return
+        self._unwritten = (
+            saved
+            if self._unwritten is None
+            else (min(saved[0], self._unwritten[0]), max(saved[1], self._unwritten[1]))
+        )
+        self.consecutive_failures = max(self.consecutive_failures, failures)
+
     def flush(self, conn: sqlite3.Connection) -> int:
         """Write the pending span. Returns cells written, 0 if nothing or failed."""
+        self._restore(conn)
         span = self._span()
         if span is None:
             return 0
@@ -85,6 +135,7 @@ class LiveSheet:
             rows = exporter.rows_in_range(conn, first, last)
             if not rows:
                 self._unwritten = None
+                save_unwritten(conn, None, 0)
                 return 0
             cells = sheets.write_range(
                 self.service, self.sheet_id, self.tab, rows, first_row=first
@@ -94,6 +145,7 @@ class LiveSheet:
             self.consecutive_failures += 1
             carry = self.consecutive_failures < MAX_CARRIED_FLUSHES
             self._unwritten = (first, last) if carry else None
+            save_unwritten(conn, self._unwritten, self.consecutive_failures if carry else 0)
             if not carry:
                 self.abandoned.append((first, last))
             log.warning(
@@ -115,6 +167,7 @@ class LiveSheet:
             return 0
 
         self._unwritten = None
+        save_unwritten(conn, None, 0)
         self.flushes += 1
         self.consecutive_failures = 0
         return cells

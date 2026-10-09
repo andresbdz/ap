@@ -140,6 +140,69 @@ class TestFailureIsNotFatal:
         assert sheet.failures == live_sheet.MAX_CARRIED_FLUSHES
 
 
+class TestAnUnwrittenSpanOutlivesThePass:
+    """A LiveSheet lasts one pass. What it failed to write must not die with it.
+
+    On 2026-10-09 the end of pass flush timed out at Google, the next pass built
+    a fresh LiveSheet with nothing to carry, and rows 1402 to 1601 stayed stale
+    until a manual push.
+    """
+
+    def test_the_next_pass_writes_what_this_one_could_not(self, conn, monkeypatch):
+        recorder = RecordingSheets(fail=TimeoutError("timed out"))
+        monkeypatch.setattr(live_sheet.sheets, "write_range", recorder.write_range)
+
+        first_pass = live_sheet.LiveSheet(None, "sid", "Output")
+        first_pass.record(2)
+        first_pass.record(3)
+        first_pass.flush(conn)
+
+        recorder.fail = None
+        next_pass = live_sheet.LiveSheet(None, "sid", "Output")  # a new pass, or a new process
+        next_pass.record(4)
+        next_pass.flush(conn)
+
+        assert recorder.writes == [(2, 3)], "rows 2 to 4 in one write, nothing lost"
+
+    def test_it_is_written_even_if_the_next_pass_finishes_nothing(self, conn, monkeypatch):
+        recorder = RecordingSheets(fail=TimeoutError("timed out"))
+        monkeypatch.setattr(live_sheet.sheets, "write_range", recorder.write_range)
+        failed = live_sheet.LiveSheet(None, "sid", "Output")
+        failed.record(5)
+        failed.flush(conn)
+
+        recorder.fail = None
+        live_sheet.LiveSheet(None, "sid", "Output").flush(conn)
+
+        assert recorder.writes == [(5, 1)]
+
+    def test_a_successful_write_forgets_it(self, conn, monkeypatch):
+        recorder = RecordingSheets(fail=TimeoutError("timed out"))
+        monkeypatch.setattr(live_sheet.sheets, "write_range", recorder.write_range)
+        sheet = live_sheet.LiveSheet(None, "sid", "Output")
+        sheet.record(2)
+        sheet.flush(conn)
+        recorder.fail = None
+        sheet.flush(conn)
+
+        assert live_sheet.load_unwritten(conn) == (None, 0)
+
+    def test_the_bound_counts_failures_across_passes(self, conn, monkeypatch):
+        # Otherwise every pass would start again at zero and a long outage would
+        # grow one span without end.
+        monkeypatch.setattr(
+            live_sheet.sheets, "write_range", RecordingSheets(fail=TimeoutError("x")).write_range
+        )
+        last = None
+        for _ in range(live_sheet.MAX_CARRIED_FLUSHES):
+            last = live_sheet.LiveSheet(None, "sid", "Output")
+            last.record(2)
+            last.flush(conn)
+
+        assert last.abandoned == [(2, 2)]
+        assert live_sheet.load_unwritten(conn) == (None, 0)
+
+
 class TestBuild:
     def test_no_sheet_configured_means_no_live_updates(self):
         from txtav.config import Settings
