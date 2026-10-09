@@ -285,31 +285,74 @@ def pending(
     return [(row["pn"], int(row["output_row"])) for row in conn.execute(sql, params)]
 
 
+# The values whose change makes a row "updated". Everything a reader of the
+# sheet acts on, and nothing that only describes how it was read.
+TRACKED = (
+    "description",
+    "availability",
+    "quantity",
+    "sale_price",
+    "list_price",
+    "condition_code",
+    "core_value",
+    "outright_price",
+    "part_type",
+    "alt_pn",
+)
+
+
 def _store(conn: sqlite3.Connection, cycle_id: int, record: extract.PartRecord) -> None:
     def money(value) -> str | None:
         return None if value is None else f"{value:.2f}"
 
+    values = {
+        "description": record.description,
+        "availability": record.availability,
+        "quantity": record.quantity,
+        "sale_price": money(record.sale_price),
+        "list_price": money(record.list_price),
+        "condition_code": record.condition_code,
+        "core_value": money(record.core_value),
+        "outright_price": money(record.outright_price),
+        "part_type": record.part_type,
+        "alt_pn": record.alt_pn,
+    }
+
+    # Last Updated carries forward while nothing changes. Compared against the
+    # newest row for this part in any cycle, including this one, so a part read
+    # twice in a cycle after a requeue does not count as changed.
+    previous = conn.execute(
+        f"SELECT {', '.join(TRACKED)}, updated_at, scraped_at FROM results"
+        " WHERE pn = ? ORDER BY cycle_id DESC, scraped_at DESC LIMIT 1",
+        (record.pn_requested,),
+    ).fetchone()
+    unchanged = previous is not None and all(
+        previous[name] == values[name] for name in TRACKED
+    )
+    updated_at = (previous["updated_at"] or previous["scraped_at"]) if unchanged else None
+
     conn.execute(
         "INSERT OR REPLACE INTO results(cycle_id, pn, description, availability, quantity,"
         " sale_price, list_price, condition_code, core_value, outright_price,"
-        " part_type, alt_pn, tab_active, conflict, conflict_note)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " part_type, alt_pn, tab_active, conflict, conflict_note, updated_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, COALESCE(?, datetime('now')))",
         (
             cycle_id,
             record.pn_requested,
-            record.description,
-            record.availability,
-            record.quantity,
-            money(record.sale_price),
-            money(record.list_price),
-            record.condition_code,
-            money(record.core_value),
-            money(record.outright_price),
-            record.part_type,
-            record.alt_pn,
+            values["description"],
+            values["availability"],
+            values["quantity"],
+            values["sale_price"],
+            values["list_price"],
+            values["condition_code"],
+            values["core_value"],
+            values["outright_price"],
+            values["part_type"],
+            values["alt_pn"],
             record.tab_active,
             int(bool(record.conflicts)),
             "; ".join(record.conflicts) or None,
+            updated_at,
         ),
     )
 

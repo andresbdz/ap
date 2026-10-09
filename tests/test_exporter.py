@@ -73,6 +73,11 @@ class TestColumnLayout:
             "Type",
             "Price reference",
             "Date Processed",
+            # Added at the client's request on 2026-10-09, after the original
+            # eleven, which keep their positions.
+            "Last Updated",
+            "Last Checked",
+            "Last Scraped",
         ]
 
     def test_type_is_a_real_column_not_an_extra(self, conn, tmp_path):

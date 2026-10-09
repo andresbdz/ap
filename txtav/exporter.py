@@ -30,7 +30,7 @@ from pathlib import Path
 
 OUTPUT_SHEET = "Output"
 
-COLUMNS = (
+BASE_COLUMNS = (
     "PART NUMBER",
     "Alternate part number",
     "Description",
@@ -43,6 +43,20 @@ COLUMNS = (
     "Price reference",
     "Date Processed",
 )
+
+# Asked for by the client on 2026-10-09, after the original scope. The portal
+# shows no date of its own on a part page (checked across all 22 saved pages),
+# so all three come from this system's own records, in UTC:
+#
+#   L  Last Updated   the last time any value in the row changed from the read
+#                     before it. Says how long a price or a stock level has stood.
+#   M  Last Checked   the last time the part was looked up, whatever came of it,
+#                     including a lookup that failed.
+#   N  Last Scraped   the last time data was actually read from its page. The
+#                     same moment as Date Processed, with the time of day.
+TRACKING_COLUMNS = ("Last Updated", "Last Checked", "Last Scraped")
+
+COLUMNS = BASE_COLUMNS + TRACKING_COLUMNS
 
 # Not in the client's sheet. Written only on request, because it is the one
 # piece of information their layout has nowhere to put: whether a blank price
@@ -57,11 +71,20 @@ EXTRA_COLUMNS = ("Availability",)
 # a part not yet reached in the current cycle keeps the value from the previous
 # one rather than going blank, and a part never processed still occupies its
 # row with only its part number filled in.
+#
+# Times are cut to the minute: "2026-10-09 08:39" is read by the sheet as a real
+# date and time, so the columns sort and filter as dates.
 SELECT = """
 SELECT p.pn,
        r.alt_pn, r.description, r.condition_code, r.quantity,
        r.outright_price, r.sale_price, r.core_value, r.part_type,
-       r.price_ref, date(r.scraped_at) AS processed_on, r.availability
+       r.price_ref, date(r.scraped_at) AS processed_on, r.availability,
+       substr(COALESCE(r.updated_at, r.scraped_at), 1, 16) AS last_updated,
+       substr((SELECT MAX(j.finished_at) FROM jobs j
+               WHERE j.pn = p.pn
+                 AND j.status IN ('success', 'not_found', 'manual_review', 'failed')),
+              1, 16) AS last_checked,
+       substr(r.scraped_at, 1, 16) AS last_scraped
 FROM parts p
 LEFT JOIN results r
   ON r.pn = p.pn
@@ -137,6 +160,9 @@ def _row_values(row, *, include_extras: bool) -> list[object]:
         row["part_type"] or "",
         row["price_ref"] or "",
         row["processed_on"] or "",
+        row["last_updated"] or "",
+        row["last_checked"] or "",
+        row["last_scraped"] or "",
     ]
     if include_extras:
         record.append(row["availability"] or "")

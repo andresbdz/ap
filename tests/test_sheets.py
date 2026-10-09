@@ -22,8 +22,11 @@ class TestColumnLetter:
     def test_maps_a_count_to_a_letter(self, count, expected):
         assert sheets.column_letter(count) == expected
 
-    def test_the_clients_layout_ends_at_k(self):
-        assert sheets.column_letter(len(exporter.COLUMNS)) == "K"
+    def test_the_clients_original_layout_ends_at_k(self):
+        assert sheets.column_letter(len(exporter.BASE_COLUMNS)) == "K"
+
+    def test_with_the_tracking_dates_it_ends_at_n(self):
+        assert sheets.column_letter(len(exporter.COLUMNS)) == "N"
 
     def test_zero_is_rejected(self):
         with pytest.raises(ValueError):

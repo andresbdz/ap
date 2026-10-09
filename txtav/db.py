@@ -102,6 +102,11 @@ CREATE TABLE IF NOT EXISTS results (
     conflict_note  TEXT,
     html_sha256    TEXT,
     scraped_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    -- When any value in this row last differed from the read before it. The
+    -- portal shows no date of its own, so this is the only way to say how
+    -- long a price has stood. NULL on rows written before it existed, which
+    -- the exporter reads as their scraped_at.
+    updated_at     TEXT,
     PRIMARY KEY (cycle_id, pn)
 );
 -- Same reason as jobs_pn: pn is not the leading column of the primary key.
@@ -160,6 +165,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(results)")}
     for column, definition in (
         ("availability", "TEXT NOT NULL DEFAULT 'available'"),
+        ("updated_at", "TEXT"),
     ):
         if column not in existing:
             conn.execute(f"ALTER TABLE results ADD COLUMN {column} {definition}")

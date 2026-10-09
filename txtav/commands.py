@@ -14,7 +14,7 @@ from txtav.config import load_settings
 # column order and it had already drifted: it still listed the nine columns of
 # the sample workbook, without Type or Date Processed, so `txtav results`
 # printed a layout the sheet no longer has.
-OUTPUT_COLUMNS = exporter.COLUMNS
+OUTPUT_COLUMNS = exporter.BASE_COLUMNS  # the tracking dates come from more than one table
 
 
 def holds_portal_lock(command):
