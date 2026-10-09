@@ -47,6 +47,10 @@ class DailyReport:
     halt_kind: str | None
     halt_detail: str | None
     schedule: str | None = None
+    # Parts with an actual price. Not the same as `success`, which also counts
+    # a quote only or not offered part read correctly: labelling that number
+    # "priced" overstated coverage by 353 parts on 2026-10-09.
+    priced: int | None = None
 
     @property
     def percent_done(self) -> float:
@@ -56,7 +60,7 @@ class DailyReport:
         lines = [
             f"TXT parts run, {self.day}",
             f"  progress      {self.done:,} of {self.total_parts:,} ({self.percent_done:.1f}%)",
-            f"  priced        {self.success:,}",
+            f"  priced        {self.success if self.priced is None else self.priced:,}",
             f"  discontinued  {self.discontinued:,}",
             f"  quote only    {self.quote_only:,}",
             f"  not offered   {self.not_offered:,}",
@@ -104,6 +108,15 @@ def build_daily_report(conn: sqlite3.Connection) -> DailyReport:
     discontinued = by_availability.get("no_longer_available", 0)
     quote_only = by_availability.get("price_on_request", 0)
     not_offered = by_availability.get("no_price_listed", 0)
+    priced = 0
+    if cycle_id is not None:
+        priced = int(
+            conn.execute(
+                "SELECT COUNT(*) n FROM results WHERE cycle_id = ?"
+                " AND availability = 'available' AND sale_price IS NOT NULL",
+                (cycle_id,),
+            ).fetchone()["n"]
+        )
 
     total = int(conn.execute("SELECT COUNT(*) n FROM parts").fetchone()["n"])
     pending = counts.get("pending", 0) + counts.get("in_flight", 0)
@@ -143,6 +156,7 @@ def build_daily_report(conn: sqlite3.Connection) -> DailyReport:
         halt_kind=halt["kind"] if halt else None,
         halt_detail=halt["detail"] if halt else None,
         schedule=schedule,
+        priced=priced,
     )
 
 
