@@ -184,7 +184,17 @@ def extract(page_html: str, pn_requested: str) -> PartRecord:
 
 
 def _same_pn(left: str, right: str) -> bool:
-    return left.strip().upper() == right.strip().upper()
+    """Equal ignoring case and runs of whitespace.
+
+    The page title collapses spaces the input cell may repeat: the list holds
+    "1001  -  HINGE" and its page reads "1001 - HINGE", which is the same part
+    and was being flagged as a different one.
+    """
+
+    def norm(value: str) -> str:
+        return re.sub(r"\s+", " ", value).strip().upper()
+
+    return norm(left) == norm(right)
 
 
 def _check(record: PartRecord, pn_requested: str) -> None:

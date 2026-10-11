@@ -515,6 +515,12 @@ def run(
 
         if record.found and record.conflicts:
             log.warning("needs_review", pn=pn, conflicts=record.conflicts)
+            if attempt.html and _worth_keeping(record.conflicts):
+                # Without the page a flag can only be described, not settled:
+                # on 2026-10-11 three parts showed a displayed price 13.32 %
+                # above the hidden one, and nothing was left to say which the
+                # portal means. Kept locally, under a gitignored directory.
+                _save_page(Path(settings.review_pages_dir), pn, attempt.html)
         elif record.found:
             log.info(
                 "scraped",
@@ -542,18 +548,31 @@ def run(
         # in the database and the sheet should show what was actually done
         # before the stop.
         live.flush(conn)
-        if live.abandoned or live.consecutive_failures:
-            # The run was fine; the sheet is not. Said out loud because those
-            # rows still show the previous cycle's prices, and a stale price
-            # nobody knows is stale is the worst thing this system can produce.
-            spans = ", ".join(f"{a}-{b}" for a, b in live.abandoned) or "the last block"
+        if live.abandoned:
+            # The run was fine; the sheet is not, and will not fix itself. Said
+            # out loud because those rows still show the previous cycle's
+            # prices, and a stale price nobody knows is stale is the worst thing
+            # this system can produce.
+            spans = ", ".join(f"{a}-{b}" for a, b in live.abandoned)
             detail = (
-                f"the Output tab is behind the database. Rows not written: {spans}. "
-                f"{live.failures} flush(es) failed. The database is complete; run "
-                f"`txtav sheet-push` to rebuild the tab from it."
+                f"the Output tab is behind the database. Rows not written: {spans}, "
+                f"after {live_sheet.MAX_CARRIED_FLUSHES} failed attempts. The "
+                f"database is complete; run `txtav sheet-push` to rebuild the tab."
             )
             db.log_event(conn, "warning", "sheet_behind", detail)
             alerts.send(settings.alert_webhook, "TXT sheet is behind the database", detail)
+        elif live.consecutive_failures:
+            # Recorded, not alerted. The span is kept in the database and written
+            # by the next flush; on 2026-10-11 one such timeout cleared itself an
+            # hour later, while the alert it raised told people to run a push
+            # nobody needed.
+            db.log_event(
+                conn,
+                "info",
+                "sheet_retry_pending",
+                f"a sheet write failed ({live.consecutive_failures} in a row); "
+                f"the rows will be written by the next flush",
+            )
 
     if report.halted is None:
         finish_cycle_if_complete(conn, cycle_id)
@@ -628,6 +647,15 @@ def _report_sheet_unavailable(conn: sqlite3.Connection, settings: Settings) -> N
     )
     db.log_event(conn, "warning", "sheet_unavailable", detail)
     alerts.send(settings.alert_webhook, "TXT results are not reaching the sheet", detail)
+
+
+def _worth_keeping(conflicts: list[str]) -> bool:
+    """Whether a flagged page should be kept as evidence.
+
+    Multiple visible alternates are common (149 of the first 19,404 parts) and
+    fully described by the flag itself; anything else is rare and not.
+    """
+    return any(not c.startswith("more than one alternate") for c in conflicts)
 
 
 def _save_page(directory: Path, pn: str, html: str) -> None:

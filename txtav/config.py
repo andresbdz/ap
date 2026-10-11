@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     fixtures_dir: Path = Path("fixtures")
     log_dir: Path = Path("logs")
     screenshot_dir: Path = Path("screenshots")
+    # Pages of rows flagged for review, other than for multiple alternates.
+    # Under fixtures/, which is gitignored: these pages carry account details.
+    review_pages_dir: Path = Path("fixtures/review")
 
     # Pacing
     request_interval_seconds: float = DEFAULT_INTERVAL_SECONDS
