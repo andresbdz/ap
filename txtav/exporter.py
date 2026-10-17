@@ -145,17 +145,23 @@ def all_rows(
     return out
 
 
+# What the Sale and Outright price cells say for a rental unit, whose page shows
+# a rental fee. The client's decision, 2026-10-17.
+RENTAL_PRICE = "NA"
+
+
 def _row_values(row, *, include_extras: bool) -> list[object]:
     """One database row as the client's column order. The single place that
     decides what goes in which column; everything else writes what this says."""
+    rental = row["availability"] == "rental"
     record: list[object] = [
         row["pn"],
         row["alt_pn"] or "",
         row["description"] or "",
         row["condition_code"] or "",
         row["quantity"] if row["quantity"] is not None else "",
-        _cell(_number(row["outright_price"])),
-        _cell(_number(row["sale_price"])),
+        RENTAL_PRICE if rental else _cell(_number(row["outright_price"])),
+        RENTAL_PRICE if rental else _cell(_number(row["sale_price"])),
         _cell(_number(row["core_value"])),
         row["part_type"] or "",
         row["price_ref"] or "",

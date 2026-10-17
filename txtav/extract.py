@@ -45,6 +45,11 @@ QUOTE_ONLY = "price_on_request"
 # one. Seen on 000-110029-67.
 NOT_OFFERED = "no_price_listed"
 
+# A rental unit: the page's Condition line reads "Rental" and the price it shows
+# is a rental fee, not a sale price. The client decided on 2026-10-17 that the
+# sheet shows NA for its Sale and Outright prices. The fee is still stored.
+RENTAL = "rental"
+
 
 
 class ExtractionError(ValueError):
@@ -166,6 +171,8 @@ def extract(page_html: str, pn_requested: str) -> PartRecord:
     record.page_condition = _first(
         doc, "//li[starts-with(normalize-space(.),'Condition:')]/span"
     )
+    if rules.is_rental(record.page_condition):
+        record.availability = RENTAL
 
     stock_nodes = doc.xpath(
         "//*[contains(translate(text(),'instock','INSTOCK'),'IN STOCK')]"

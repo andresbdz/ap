@@ -51,6 +51,7 @@ class DailyReport:
     # a quote only or not offered part read correctly: labelling that number
     # "priced" overstated coverage by 353 parts on 2026-10-09.
     priced: int | None = None
+    rental: int = 0
 
     @property
     def percent_done(self) -> float:
@@ -64,6 +65,7 @@ class DailyReport:
             f"  discontinued  {self.discontinued:,}",
             f"  quote only    {self.quote_only:,}",
             f"  not offered   {self.not_offered:,}",
+            f"  rental        {self.rental:,}",
             f"  not found     {self.not_found:,}",
             f"  for review    {self.manual_review:,}",
             f"  failed        {self.failed:,}",
@@ -108,6 +110,7 @@ def build_daily_report(conn: sqlite3.Connection) -> DailyReport:
     discontinued = by_availability.get("no_longer_available", 0)
     quote_only = by_availability.get("price_on_request", 0)
     not_offered = by_availability.get("no_price_listed", 0)
+    rental = by_availability.get("rental", 0)
     priced = 0
     if cycle_id is not None:
         priced = int(
@@ -150,6 +153,7 @@ def build_daily_report(conn: sqlite3.Connection) -> DailyReport:
         discontinued=discontinued,
         quote_only=quote_only,
         not_offered=not_offered,
+        rental=rental,
         failed=counts.get("failed", 0),
         manual_review=counts.get("manual_review", 0),
         pending=pending,

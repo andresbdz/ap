@@ -80,6 +80,11 @@ def has_exchange_suffix(pn: str) -> bool:
     return pn.strip().upper().endswith("EX")
 
 
+def is_rental(page_condition: str | None) -> bool:
+    """True when the page's Condition line marks a rental unit."""
+    return (page_condition or "").strip().upper().startswith("RENTAL")
+
+
 @dataclass(frozen=True)
 class ConditionResult:
     code: str
@@ -106,7 +111,14 @@ def condition_code(page_condition: str | None, pn: str) -> ConditionResult:
     if not stated:
         return ConditionResult(code, False, "no condition on page, used part number suffix")
 
-    if stated.startswith("EXCHANGE"):
+    if is_rental(stated):
+        # A known state since the client's decision of 2026-10-17, handled by
+        # its availability rather than its condition, so nothing to flag here.
+        return ConditionResult(code, False, "rental unit, condition from the part number suffix")
+
+    if stated.startswith(("EXCHANGE", "OVERHAUL")):
+        # "Overhauled" was first seen on 2026-10-17 and means the same thing to
+        # the condition code as "Exchange": not new.
         page_says = CONDITION_OVERHAUL
     elif stated.startswith("NEW"):
         page_says = CONDITION_NEW
