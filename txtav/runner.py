@@ -548,6 +548,8 @@ def run(
         # in the database and the sheet should show what was actually done
         # before the stop.
         live.flush(conn)
+        if report.attempted:
+            live_sheet.refresh_review(live, conn)
         if live.abandoned:
             # The run was fine; the sheet is not, and will not fix itself. Said
             # out loud because those rows still show the previous cycle's

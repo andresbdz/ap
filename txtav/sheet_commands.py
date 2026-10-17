@@ -123,6 +123,25 @@ def cmd_sheet_push(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review_push(args: argparse.Namespace) -> int:
+    """Rewrite the Review tab: every flagged part and why."""
+    settings = load_settings()
+    sheet_id = _require_sheet_id(settings)
+    if sheet_id is None:
+        return 1
+    conn = db.connect(settings.db_path)
+    try:
+        rows = exporter.review_rows(conn)
+    finally:
+        conn.close()
+    service = sheets.build_service(
+        sheets.authorise(settings.google_client_secrets, settings.google_token)
+    )
+    sheets.replace_tab(service, sheet_id, exporter.REVIEW_TAB, exporter.REVIEW_COLUMNS, rows)
+    print(f"Wrote {len(rows):,} flagged parts to the {exporter.REVIEW_TAB} tab.")
+    return 0
+
+
 def register(sub) -> None:
     p_auth = sub.add_parser(
         "sheet-auth", help="authorise once against the Google Sheet"
@@ -143,3 +162,8 @@ def register(sub) -> None:
         "--processed-only` for a sample instead",
     )
     p_push.set_defaults(func=cmd_sheet_push)
+
+    p_review = sub.add_parser(
+        "review-push", help="rewrite the Review tab with every flagged part and why"
+    )
+    p_review.set_defaults(func=cmd_review_push)

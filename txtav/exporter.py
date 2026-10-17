@@ -193,6 +193,79 @@ def rows_in_range(
     return out
 
 
+# The Review tab: every part whose latest result was flagged, with why. Asked
+# for on 2026-10-17 ("where are the parts flagged for review"), when the flags
+# lived only in the database. A separate tab, so the Output tab's one row per
+# part is untouched.
+REVIEW_TAB = "Review"
+REVIEW_COLUMNS = (
+    "PART NUMBER",
+    "Row in Output",
+    "Reason",
+    "Detail",
+    "Condition code written",
+    "Sale price written",
+    "Alternate part number written",
+    "Date Processed",
+)
+
+# Most in need of a decision first. Each is matched against the start of the
+# conflict note the extractor writes.
+REVIEW_REASONS = (
+    ("hidden price", "Displayed price differs from the hidden price"),
+    ("asked for", "Page is for a different part number"),
+    ("unrecognised condition", "Unusual condition on TXT (e.g. Rental)"),
+    ("part number suffix says new", "TXT says Exchange, part number does not end in EX"),
+    ("part number suffix says exchange", "Part number ends in EX, TXT says New"),
+    ("part page rendered but carries no", "Page is missing a price or stock line"),
+    ("more than one alternate", "Several alternate part numbers shown"),
+)
+
+REVIEW_SELECT = """
+SELECT p.pn, p.output_row, r.conflict_note, r.condition_code, r.sale_price,
+       r.alt_pn, date(r.scraped_at) AS processed_on
+FROM parts p
+JOIN results r
+  ON r.pn = p.pn
+ AND r.cycle_id = (SELECT MAX(cycle_id) FROM results x WHERE x.pn = p.pn)
+WHERE r.conflict = 1
+"""
+
+
+def review_reason(note: str | None) -> tuple[int, str]:
+    """(sort order, readable reason) for a conflict note. The first flag wins."""
+    first = (note or "").split("; ")[0].strip().lower()
+    for order, (prefix, label) in enumerate(REVIEW_REASONS):
+        if first.startswith(prefix):
+            return order, label
+    return len(REVIEW_REASONS), "Other"
+
+
+def review_rows(conn: sqlite3.Connection) -> list[list[object]]:
+    """Flagged parts, most in need of a decision first, then in Output order."""
+    rows = []
+    for row in conn.execute(REVIEW_SELECT):
+        order, label = review_reason(row["conflict_note"])
+        rows.append(
+            (
+                order,
+                int(row["output_row"]),
+                [
+                    row["pn"],
+                    int(row["output_row"]),
+                    label,
+                    row["conflict_note"] or "",
+                    row["condition_code"] or "",
+                    _cell(_number(row["sale_price"])),
+                    row["alt_pn"] or "",
+                    row["processed_on"] or "",
+                ],
+            )
+        )
+    rows.sort(key=lambda item: (item[0], item[1]))
+    return [values for _, _, values in rows]
+
+
 def latest_cycle(conn: sqlite3.Connection) -> int | None:
     row = conn.execute("SELECT id FROM cycles ORDER BY id DESC LIMIT 1").fetchone()
     return None if row is None else int(row["id"])

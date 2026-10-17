@@ -173,6 +173,24 @@ class LiveSheet:
         return cells
 
 
+def refresh_review(live: LiveSheet, conn: sqlite3.Connection) -> bool:
+    """Rewrite the Review tab from the database. Never raises.
+
+    Run at the end of every pass, so the flagged list is never more than a
+    pass behind. A failure only means the list is a pass staler; the next pass
+    rewrites all of it.
+    """
+    try:
+        rows = exporter.review_rows(conn)
+        sheets.replace_tab(
+            live.service, live.sheet_id, exporter.REVIEW_TAB, exporter.REVIEW_COLUMNS, rows
+        )
+        return True
+    except Exception as exc:  # noqa: BLE001 - never take the run down for this
+        log.warning("review_tab_failed", error=f"{type(exc).__name__}: {exc}")
+        return False
+
+
 def build(settings) -> LiveSheet | None:
     """A LiveSheet when the sheet is configured and reachable, otherwise None.
 

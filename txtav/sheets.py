@@ -266,6 +266,47 @@ def ensure_size(service, sheet_id: str, tab: str, rows: int, columns: int) -> bo
     return True
 
 
+def replace_tab(
+    service,
+    sheet_id: str,
+    tab: str,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[object]],
+) -> int:
+    """Make `tab` hold exactly this header and these rows. Creates it if absent.
+
+    For a tab whose length changes, such as the Review list. Never used on the
+    Output tab, which is a fixed table addressed by row position.
+    """
+    meta = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+    titles = {s["properties"]["title"] for s in meta.get("sheets", [])}
+    if tab not in titles:
+        execute_with_retry(
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=sheet_id,
+                body={"requests": [{"addSheet": {"properties": {"title": tab}}}]},
+            )
+        )
+        log.info("sheet_tab_created", tab=tab)
+    ensure_size(service, sheet_id, tab, max(len(rows) + 1, 2), len(columns))
+    execute_with_retry(
+        service.spreadsheets().values().clear(spreadsheetId=sheet_id, range=tab, body={})
+    )
+    values = [list(columns)] + [[_cell(v) for v in row] for row in rows]
+    result = execute_with_retry(
+        service.spreadsheets()
+        .values()
+        .update(
+            spreadsheetId=sheet_id,
+            range=f"{tab}!A1:{column_letter(len(columns))}{len(values)}",
+            valueInputOption="USER_ENTERED",
+            body={"values": values},
+        )
+    )
+    log.info("sheet_tab_replaced", tab=tab, rows=len(rows))
+    return int(result.get("updatedCells", 0))
+
+
 def write_header(service, sheet_id: str, tab: str, columns: Sequence[str]) -> int:
     """Write row 1. A full push owns the header as well as the data.
 
