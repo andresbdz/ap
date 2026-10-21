@@ -1,6 +1,7 @@
 #!/bin/sh
-# Copy the job store to a backup folder, normally inside Google Drive for
-# desktop, and keep the newest 14 copies. Uses SQLite's own backup, which is
+# Copy the job store to a backup folder and keep the newest 14 copies. Use a
+# plain folder that Google Drive for desktop syncs, not a path under
+# ~/Library/CloudStorage, which macOS will not let a launchd job write to. Uses SQLite's own backup, which is
 # safe while the run is writing. Settings and logins are never copied: the
 # database holds results and progress only.
 set -eu
