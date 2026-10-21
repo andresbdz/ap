@@ -91,7 +91,9 @@ def _run(args: argparse.Namespace, *, dry_run: bool) -> int:
             return 2
 
         with navigator.browser_session(
-            settings.profile_dir, settings.page_timeout_seconds
+            settings.profile_dir,
+            settings.page_timeout_seconds,
+            channel=settings.browser_channel,
         ) as page:
             nav = navigator.Navigator(page, settings.base_url)
             if not nav.is_signed_in():

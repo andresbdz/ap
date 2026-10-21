@@ -71,6 +71,12 @@ class Settings(BaseSettings):
     consecutive_failure_halt: int = 8
     page_timeout_seconds: int = 45
 
+    # Browser. Empty uses Playwright's own Chromium. "chrome" uses the Google
+    # Chrome installed on the machine, which macOS 13 needs: Playwright no
+    # longer ships Chromium for it. The login has to be made with the same
+    # browser the run uses, since the session lives in its profile.
+    browser_channel: str = ""
+
     # Portal
     base_url: str = "https://ww2.txtav.com"
 

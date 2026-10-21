@@ -222,7 +222,11 @@ def supervise(
 
         Sets report.stopped_because whenever the answer is STOP.
         """
-        with browser_session(settings.profile_dir, settings.page_timeout_seconds) as page:
+        with browser_session(
+            settings.profile_dir,
+            settings.page_timeout_seconds,
+            channel=settings.browser_channel,
+        ) as page:
             navigator = Navigator(page, settings.base_url)
 
             for _ in range(max(1, session_passes)):

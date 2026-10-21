@@ -184,18 +184,29 @@ class Navigator:
 
 
 @contextmanager
-def browser_session(profile_dir: Path | str, timeout_seconds: int, *, headless: bool = False):
+def browser_session(
+    profile_dir: Path | str,
+    timeout_seconds: int,
+    *,
+    headless: bool = False,
+    channel: str = "",
+):
     """Open the persistent profile and yield a Navigator.
 
     Headed by default. A headless run presents a different browser build and a
     different user agent to the portal than the session was created with, and
     the whole approach here is that the session is an ordinary one.
+
+    `channel` picks an installed browser instead of Playwright's own Chromium,
+    e.g. "chrome". Needed on macOS 13, where Playwright no longer ships a
+    Chromium build ("Playwright does not support chromium on mac13-arm64",
+    seen on the run machine on 2026-10-21).
     """
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
-            str(profile_dir), headless=headless, viewport=None
+            str(profile_dir), headless=headless, viewport=None, channel=channel or None
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()

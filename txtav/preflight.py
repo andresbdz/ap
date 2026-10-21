@@ -70,8 +70,20 @@ def check_packages(importer=importlib.import_module) -> Check:
     )
 
 
-def check_browser() -> Check:
-    """Playwright's own Chromium, which `pip install` does not download."""
+def check_browser(channel: str = "") -> Check:
+    """The browser the run will launch: Playwright's own Chromium, which
+    `pip install` does not download, or an installed one named by channel."""
+    if channel:
+        try:
+            from playwright.sync_api import sync_playwright
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(channel=channel, headless=True)
+                version = browser.version
+                browser.close()
+        except Exception as exc:  # noqa: BLE001
+            return Check(FAIL, "browser", f"channel {channel!r} would not launch: {type(exc).__name__}: {exc}")
+        return Check(PASS, "browser", f"installed {channel} {version}")
     try:
         from playwright.sync_api import sync_playwright
 
@@ -229,7 +241,7 @@ def check_sheet(settings) -> Check:
 
 def run_all(settings) -> list[Check]:
     checks = [check_python(), check_packages(), check_env_file()]
-    checks.append(check_browser())
+    checks.append(check_browser(settings.browser_channel))
     checks += check_store(Path(settings.db_path))
     checks.append(check_alerts(settings.alert_webhook))
     checks.append(check_disk(Path(settings.db_path).parent))

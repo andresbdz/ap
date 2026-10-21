@@ -123,7 +123,10 @@ def cmd_login(args: argparse.Namespace) -> int:
 
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
-            str(settings.profile_dir), headless=False, viewport=None
+            str(settings.profile_dir),
+            headless=False,
+            viewport=None,
+            channel=settings.browser_channel or None,
         )
         page = context.pages[0] if context.pages else context.new_page()
         page.set_default_timeout(settings.page_timeout_seconds * 1000)
